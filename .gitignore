@@ -1,0 +1,279 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+*.env
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+.env
+
+.env*
+
+#Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+#SO
+.DS_Store
+Thumbs.db
+
+
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+*.env
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+.env
+
+.env*
+
+#Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+#SO
+.DS_Store
+Thumbs.db
+
+
+
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+*.env
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+.env
+
+.env*
+
+#Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+#SO
+.DS_Store
+Thumbs.db
+
+
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+*.env
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-ingo/
+dist/
+build/
+
+# Entornos
+.venv/
+venv/
+
+.env
+
+.env*
+
+#Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+#SO
+.DS_Store
+Thumbs.db
+venv/
+
+
+.env
+.env.*
+
+#Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+#SO
+.DS_Store
+Thumbs.db
+
+#Data
+vindr_dataset/images/
+cindr_dataset/**/*.dicom
+data/
+outputs/
+logs/
