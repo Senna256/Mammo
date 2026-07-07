@@ -7,5 +7,5 @@ def load_dicom(path):
     Returns both because other function (like flip_to_standard) need the ds metadata.
     """
     ds =pydicom.dcmread(str(path))
-    img = ds.pixel_array.astype(no.float32)
+    img = ds.pixel_array.astype(np.uint8) # ( bit so we can use /255.0)
     return img, ds
