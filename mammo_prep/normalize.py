@@ -41,7 +41,7 @@ def get_breast_mask(img, min_area=2000):
     """
 
     # OpenCV threshold with Otsu requires uint8 or uint16
-    img = img_flipped.astype(np.uint8)
+    img = img.astype(np.uint8)
 
     # Otsu threshold
     mask = cv2.threshold(
@@ -65,5 +65,6 @@ def get_breast_mask(img, min_area=2000):
         if area >= min_area:
             component = (label_ids == i).astype(np.uint8) * 255
             output = cv2.bitwise_or(output, component)
+
 
     return img, output

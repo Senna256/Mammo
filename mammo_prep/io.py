@@ -1,5 +1,5 @@
 import pydicom
-import numpy as no
+import numpy as np
 
 def load_dicom(path):
     """
