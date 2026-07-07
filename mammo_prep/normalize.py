@@ -20,3 +20,50 @@ def apply_clahe(img, clip_limit=2.0, title_grid_size=(8,8)):
     """
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=title_grid_size)
     return clahe.apply(img)
+
+
+def get_breast_mask(img, min_area=2000):
+    """
+    Generates a binary mask of the breast using Otsu thresholding and
+    connected component analysis.
+
+    Parameters
+    ----------
+    img_flipped : np.ndarray
+        Grayscale image.
+    min_area : int, optional
+        Minimum connected component area to keep.
+
+    Returns
+    -------
+    np.ndarray
+        Binary mask (uint8) with values 0 and 255.
+    """
+
+    # OpenCV threshold with Otsu requires uint8 or uint16
+    img = img_flipped.astype(np.uint8)
+
+    # Otsu threshold
+    mask = cv2.threshold(
+        img,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU
+    )[1]
+
+    # Connected components
+    total_labels, label_ids, stats, _ = cv2.connectedComponentsWithStats(
+        mask, 4, cv2.CV_32S
+    )
+
+    output = np.zeros_like(mask)
+
+    # Keep only large components
+    for i in range(1, total_labels):
+        area = stats[i, cv2.CC_STAT_AREA]
+
+        if area >= min_area:
+            component = (label_ids == i).astype(np.uint8) * 255
+            output = cv2.bitwise_or(output, component)
+
+    return img, output
