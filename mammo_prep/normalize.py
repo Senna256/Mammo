@@ -29,8 +29,8 @@ def get_breast_mask(img, min_area=2000):
 
     Parameters
     ----------
-    img_flipped : np.ndarray
-        Grayscale image.
+    img : np.ndarray
+        Grayscale image. It may contain the original DICOM intensities.
     min_area : int, optional
         Minimum connected component area to keep.
 
@@ -40,15 +40,15 @@ def get_breast_mask(img, min_area=2000):
         Binary mask (uint8) with values 0 and 255.
     """
 
-    # OpenCV threshold with Otsu requires uint8 or uint16
-    img = img.astype(np.uint8)
+    # This normalization is used only to calculate the mask.
+    img_for_mask = normalize_to_uint8(img)
 
     # Otsu threshold
     mask = cv2.threshold(
-        img,
+        img_for_mask,
         0,
         255,
-        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU
+        cv2.THRESH_BINARY | cv2.THRESH_OTSU
     )[1]
 
     # Connected components
@@ -58,13 +58,12 @@ def get_breast_mask(img, min_area=2000):
 
     output = np.zeros_like(mask)
 
-    # Keep only large components
-    for i in range(1, total_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
+    # Keep only the largest foreground component (the breast).
+    if total_labels > 1:
+        foreground_areas = stats[1:, cv2.CC_STAT_AREA]
+        largest_label = 1 + int(np.argmax(foreground_areas))
 
-        if area >= min_area:
-            component = (label_ids == i).astype(np.uint8) * 255
-            output = cv2.bitwise_or(output, component)
+        if stats[largest_label, cv2.CC_STAT_AREA] >= min_area:
+            output[label_ids == largest_label] = 255
 
-
-    return img, output
+    return output

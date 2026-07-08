@@ -10,22 +10,32 @@ def flip_to_standard(img, ds):
         img = np.fliplr(img)
     return img
 
-def crop_breast(img):
+def crop_breast(img, mask=None):
     """
-    Crops image to the bounding box of mamma tissue using OTSU thresholding. Return image cropped and mask associated.
+    Crops the image to the bounding box defined by a breast mask.
+
+    If no mask is provided, it is calculated using Otsu thresholding for
+    backwards compatibility.
     """
-    _, mask = cv2.threshold( img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    mask = mask>0
+    if mask is None:
+        _, mask = cv2.threshold(
+            img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
+    if mask.shape != img.shape:
+        raise ValueError("img and mask must have the same shape")
+
+    mask = mask > 0
     coords = np.argwhere(mask)
 
     if len(coords) == 0:
-        return img,(mask.astype(np.uint8) * 255)
+        return img, mask.astype(np.uint8) * 255
     
     y0, x0 = coords.min(axis=0)
     y1, x1 = coords.max(axis=0)
 
-    cropped = img[y0:y1,x0:x1]
-    cropped_mask = mask[y0:y1,x0:x1].astype(np.uint8) * 255
+    cropped = img[y0:y1 + 1, x0:x1 + 1]
+    cropped_mask = mask[y0:y1 + 1, x0:x1 + 1].astype(np.uint8) * 255
 
     return cropped, cropped_mask
 
