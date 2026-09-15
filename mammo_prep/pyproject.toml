@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mammo_prep"
+version = "0.1.0"
+description = "Preprocesado de imágenes para mamografías"
+requires-python = ">=3.8"
+dependencies = [
+    "pydicom",
+    "opencv-python",
+    "numpy",
+    "matplotlib",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mammo_prep"]
