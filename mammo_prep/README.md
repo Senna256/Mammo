@@ -1,42 +1,42 @@
 # mammo_prep
 
-Paquete de utilidades para preprocesado de imágenes de mamografía.
+Utility package for preprocessing mammography images.
 
-## Instalación
+## Installation
 
-Desde la carpeta raíz del proyecto (donde está `pyproject.toml`):
+From the project root folder (where `pyproject.toml` is located):
 
 ```bash
 pip install -e .
 ```
 
-El flag `-e` (editable) hace que cualquier cambio que hagas en el código
-se aplique automáticamente sin necesidad de reinstalar.
+The `-e` flag (editable mode) makes any changes you make to the code
+apply automatically without needing to reinstall.
 
-## Uso en notebooks
+## Usage in notebooks
 
 ```python
-# Importar módulos completos
+# Import full modules
 from mammo_prep import io, normalize, artifacts, viz
 
-# O importar funciones concretas
+# Or import specific functions
 from mammo_prep.io import load_dicom
 from mammo_prep.normalize import clahe_normalize
 from mammo_prep.artifacts import crop_to_breast
 from mammo_prep.viz import plot_comparison
 
-# Ejemplo básico
-img = load_dicom("ruta/a/imagen.dcm")
+# Basic example
+img = load_dicom("path/to/image.dcm")
 img_norm = clahe_normalize(img)
 img_crop = crop_to_breast(img_norm)
-plot_comparison(img, img_crop, titles=["Original", "Procesada"])
+plot_comparison(img, img_crop, titles=["Original", "Processed"])
 ```
 
-## Módulos
+## Modules
 
-| Módulo | Contenido |
+| Module | Contents |
 |---|---|
-| `io.py` | Carga y guardado de imágenes (DICOM, PNG, JPG) |
-| `normalize.py` | Normalización y estandarización de píxeles |
-| `artifacts.py` | Eliminación de fondo, artefactos y orientación |
-| `viz.py` | Visualización e histogramas |
+| `io.py` | Loading and saving images (DICOM, PNG, JPG) |
+| `normalize.py` | Pixel normalization and standardization |
+| `artifacts.py` | Background removal, artifact removal, and orientation |
+| `viz.py` | Visualization and histograms |
