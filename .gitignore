@@ -38,6 +38,6 @@ outputs/
 logs/
 
 # Images
-.jpg
-.jpeg
+*.jpg
+*.jpeg
 
