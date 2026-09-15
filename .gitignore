@@ -25,9 +25,9 @@ venv/
 Thumbs.db
 
 # Miscelaneous
-.csv
-.html
-.txt
+*.csv
+*.html
+*.txt
 
 
 # Data
