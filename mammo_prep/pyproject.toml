@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mammo_prep"
-version = "0.1.0"
-description = "Preprocesado de imágenes para mamografías"
+version = "0.2.2"
+description = "Preprocess pipeline for mammograms"
 requires-python = ">=3.8"
 dependencies = [
     "pydicom",
