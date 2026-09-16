@@ -49,6 +49,7 @@ CACHE = False
 # Preprocessing del paquet mammo_prep.
 # Es pot sobreescriure amb --windowing.
 WINDOWING_METHOD = "breast_tissue"
+CALC_WINDOW = True
 VOI_FUNC = "LINEAR"
 
 
@@ -113,6 +114,7 @@ def read_and_process_dicom(
     dicom_path,
     imgsz,
     windowing_method=WINDOWING_METHOD,
+    calc_window=CALC_WINDOW,
     voi_func=VOI_FUNC,
 ):
     """
@@ -123,7 +125,7 @@ def read_and_process_dicom(
 
     Pipeline:
         DICOM uint16
-        -> mammo_prep
+        -> mammo_prep (method + calc_window + voi_func)
         -> uint8
         -> grayscale -> BGR
         -> resize mantenint aspect ratio
@@ -162,6 +164,7 @@ def read_and_process_dicom(
         im,
         dicom_dataset=ds,
         method=windowing_method,
+        calc_window=calc_window,
         voi_func=voi_func,
     )
 
@@ -282,6 +285,13 @@ class DICOMYOLODataset(
             kwargs.pop(
                 "windowing_method",
                 WINDOWING_METHOD,
+            )
+        )
+
+        self.calc_window = bool(
+            kwargs.pop(
+                "calc_window",
+                CALC_WINDOW,
             )
         )
 
@@ -572,6 +582,7 @@ class DICOMYOLODataset(
                             self.im_files[i],
                             self.imgsz,
                             self.windowing_method,
+                            self.calc_window,
                             self.voi_func,
                         ),
                     indices,
@@ -708,6 +719,7 @@ class DICOMYOLODataset(
             self.im_files[i],
             self.imgsz,
             self.windowing_method,
+            self.calc_window,
             self.voi_func,
         )
 
@@ -790,6 +802,7 @@ class DICOMValidator(
 
             ram_cache_name="val",
             windowing_method=self.args.windowing_method,
+            calc_window=self.args.calc_window,
             voi_func=self.args.voi_func,
         )
 
@@ -886,6 +899,7 @@ class DICOMTrainer(
 
             ram_cache_name=mode,
             windowing_method=self.args.windowing_method,
+            calc_window=self.args.calc_window,
             voi_func=self.args.voi_func,
         )
 
@@ -1001,7 +1015,9 @@ def check_fork():
 # ============================================================
 
 def test_pipeline(
-    windowing_method=WINDOWING_METHOD
+    windowing_method=WINDOWING_METHOD,
+    calc_window=CALC_WINDOW,
+    voi_func=VOI_FUNC,
 ):
 
     print(
@@ -1017,8 +1033,10 @@ def test_pipeline(
         "=" * 70
     )
 
-    global WINDOWING_METHOD
+    global WINDOWING_METHOD, CALC_WINDOW, VOI_FUNC
     WINDOWING_METHOD = windowing_method
+    CALC_WINDOW = calc_window
+    VOI_FUNC = voi_func
 
     trainer = create_trainer(
         batch=2,
@@ -1098,11 +1116,15 @@ def test_pipeline(
 # ============================================================
 
 def smoke_test(
-    windowing_method=WINDOWING_METHOD
+    windowing_method=WINDOWING_METHOD,
+    calc_window=CALC_WINDOW,
+    voi_func=VOI_FUNC,
 ):
 
-    global WINDOWING_METHOD
+    global WINDOWING_METHOD, CALC_WINDOW, VOI_FUNC
     WINDOWING_METHOD = windowing_method
+    CALC_WINDOW = calc_window
+    VOI_FUNC = voi_func
 
     print(
         "\n"
@@ -1262,6 +1284,8 @@ def smoke_test(
 def train(
     resume=None,
     windowing_method=WINDOWING_METHOD,
+    calc_window=CALC_WINDOW,
+    voi_func=VOI_FUNC,
 ):
 
     # Comprovem fork abans de construir
@@ -1322,7 +1346,12 @@ def train(
     )
 
     print(
-        f"VOI func:    {VOI_FUNC}",
+        f"Calc window: {calc_window}",
+        flush=True,
+    )
+
+    print(
+        f"VOI func:    {voi_func}",
         flush=True,
     )
 
@@ -1345,8 +1374,10 @@ def train(
     )
 
     # Configurem el preprocessing abans de crear el trainer.
-    global WINDOWING_METHOD
+    global WINDOWING_METHOD, CALC_WINDOW, VOI_FUNC
     WINDOWING_METHOD = windowing_method
+    CALC_WINDOW = calc_window
+    VOI_FUNC = voi_func
 
     trainer = create_trainer(
         batch=BATCH,
@@ -1389,16 +1420,38 @@ def main():
     )
 
     parser.add_argument(
-        "--windowing",
+        "--method",
         choices=[
             "breast_tissue",
             "calculated_window",
         ],
         default=WINDOWING_METHOD,
-        help=(
-            "Method de preprocessing de "
-            "mammo_prep."
-        ),
+        help="Method de windowing de mammo_prep.",
+    )
+
+    parser.add_argument(
+        "--calc-window",
+        dest="calc_window",
+        action="store_true",
+        default=CALC_WINDOW,
+        help="Calcula el window abans d'aplicar la funció VOI.",
+    )
+
+    parser.add_argument(
+        "--no-calc-window",
+        dest="calc_window",
+        action="store_false",
+        help="No calcula el window; utilitza el window definit pel mètode.",
+    )
+
+    parser.add_argument(
+        "--voi-func",
+        choices=[
+            "LINEAR",
+            "SIGMOID",
+        ],
+        default=VOI_FUNC,
+        help="Funció VOI.",
     )
 
     args = parser.parse_args()
@@ -1406,20 +1459,26 @@ def main():
     if args.mode == "test":
 
         test_pipeline(
-            windowing_method=args.windowing
+            windowing_method=args.method,
+            calc_window=args.calc_window,
+            voi_func=args.voi_func,
         )
 
     elif args.mode == "smoke":
 
         smoke_test(
-            windowing_method=args.windowing
+            windowing_method=args.method,
+            calc_window=args.calc_window,
+            voi_func=args.voi_func,
         )
 
     elif args.mode == "train":
 
         train(
             resume=args.resume,
-            windowing_method=args.windowing,
+            windowing_method=args.method,
+            calc_window=args.calc_window,
+            voi_func=args.voi_func,
         )
 
 
