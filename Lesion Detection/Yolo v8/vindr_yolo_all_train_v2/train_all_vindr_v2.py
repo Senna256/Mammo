@@ -1,6 +1,5 @@
 import argparse
-import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor
+import os
 from copy import copy
 from pathlib import Path
 
@@ -10,29 +9,29 @@ import pandas as pd
 import pydicom
 import torch
 
-from mammo_prep.windowing import preprocess_window
 from ultralytics.data.dataset import YOLODataset
 from ultralytics.models.yolo.detect import DetectionTrainer, DetectionValidator
 
+from mammo_prep.windowing import (
+    preprocess_window,
+    get_dicom_voi_lut_params,
+    apply_windowing,
+)
+
 
 # ============================================================
-# PATHS
+# CONFIG
 # ============================================================
 
 DATASET = Path(
-    "/home/enric_sena/Desktop/Mammo/Lesion Detection/Yolo v8/vindr_yolo"
+    "/home/enric_sena/Desktop/Mammo/Lesion Detection/"
+    "Yolo v8/vindr_yolo"
 )
 
 CSV_PATH = Path(
-    "/home/enric_sena/Desktop/prova_enric/vindr_dataset/finding_annotations.csv"
+    "/home/enric_sena/Desktop/prova_enric/vindr_dataset/"
+    "finding_annotations.csv"
 )
-
-DATA_YAML = DATASET / "data.yaml"
-
-
-# ============================================================
-# TRAINING CONFIG
-# ============================================================
 
 MODEL = "yolov8n.pt"
 
@@ -41,342 +40,151 @@ BATCH = 4
 WORKERS = 8
 EPOCHS = 100
 DEVICE = 0
-
 CACHE = False
 
-
-# ============================================================
-# MAMMO_PREP CONFIG
-# ============================================================
-
-WINDOWING_METHOD = "breast_tissue"
-CALC_WINDOW = True
-VOI_FUNC = "LINEAR"
+DEFAULT_METHOD = "breast_tissue"
+DEFAULT_VOI_FUNC = "LINEAR"
+DEFAULT_CALC_WINDOW = True
 
 
 # ============================================================
-# RAM CACHE CONFIG
-# ============================================================
-
-RAM_CACHE_LIMIT_GB = 120
-RAM_CACHE_LIMIT_BYTES = RAM_CACHE_LIMIT_GB * 1024**3
-
-RAM_CACHE_ENABLED = True
-
-CACHE_BUILD_WORKERS = 8
-CACHE_CHUNK_SIZE = 64
-
-RAM_CACHE_USED_BYTES = 0
-
-
-# ============================================================
-# IMAGE DIMENSIONS FROM CSV
-# ============================================================
-
-print(
-    "[INIT] Carregant dimensions del CSV...",
-    flush=True,
-)
-
-_annotations = pd.read_csv(CSV_PATH)
-
-IMAGE_DIMS = {
-    str(row.image_id): (
-        int(row.height),
-        int(row.width),
-    )
-    for row in _annotations.itertuples(index=False)
-}
-
-print(
-    f"[INIT] Dimensions carregades per "
-    f"{len(IMAGE_DIMS)} imatges",
-    flush=True,
-)
-
-
-# ============================================================
-# DICOM READING + PREPROCESSING
+# DICOM PREPROCESSING
 # ============================================================
 
 def read_and_process_dicom(
-    dicom_path,
-    imgsz,
-    windowing_method,
-    calc_window,
-    voi_func,
+    path,
+    method="breast_tissue",
+    calc_window=True,
+    voi_func="LINEAR",
 ):
-    ds = pydicom.dcmread(
-        str(dicom_path)
-    )
+    ds = pydicom.dcmread(path)
 
-    im = ds.pixel_array
+    image = ds.pixel_array
 
-    if im.ndim > 2:
-        im = np.squeeze(im)
+    # --------------------------------------------------------
+    # MONOCHROME1
+    # --------------------------------------------------------
 
     if (
-        getattr(
-            ds,
-            "PhotometricInterpretation",
-            "",
-        )
+        getattr(ds, "PhotometricInterpretation", "")
         == "MONOCHROME1"
     ):
-        im = im.max() - im
+        image = (
+            image.max()
+            + image.min()
+            - image
+        )
 
-    im = preprocess_window(
-        im,
-        dicom_dataset=ds,
-        method=windowing_method,
-        calc_window=calc_window,
-        voi_func=voi_func,
+    image = np.asarray(
+        image,
+        dtype=np.float32,
     )
 
-    im = np.asarray(im)
+    # --------------------------------------------------------
+    # WINDOWING
+    # --------------------------------------------------------
 
-    if im.dtype != np.uint8:
+    if calc_window:
 
-        if np.issubdtype(
-            im.dtype,
-            np.floating,
-        ):
-            if im.max() <= 1.0:
-                im = im * 255.0
-
-        im = np.clip(
-            im,
-            0,
-            255,
-        ).astype(
-            np.uint8
+        im = preprocess_window(
+            image,
+            dicom_dataset=ds,
+            method=method,
+            voi_func=voi_func,
         )
+
+    else:
+
+        params = get_dicom_voi_lut_params(ds)
+
+        im = apply_windowing(
+            image,
+            window_width=params["window_width"],
+            window_center=params["window_center"],
+            voi_func=voi_func,
+            y_min=0,
+            y_max=255,
+        )
+
+        im = np.rint(
+            np.clip(
+                im,
+                0,
+                255,
+            )
+        ).astype(np.uint8)
+
+    # --------------------------------------------------------
+    # GRAYSCALE -> BGR
+    # --------------------------------------------------------
 
     if im.ndim == 2:
-
         im = cv2.cvtColor(
             im,
             cv2.COLOR_GRAY2BGR,
         )
 
-    elif (
-        im.ndim == 3
-        and im.shape[2] == 1
-    ):
-
+    elif im.ndim == 3 and im.shape[2] == 1:
         im = cv2.cvtColor(
             im,
             cv2.COLOR_GRAY2BGR,
         )
 
-    h0, w0 = im.shape[:2]
-
-    scale = min(
-        imgsz / h0,
-        imgsz / w0,
-    )
-
-    new_h = max(
-        1,
-        int(round(h0 * scale)),
-    )
-
-    new_w = max(
-        1,
-        int(round(w0 * scale)),
-    )
-
-    if (
-        new_h,
-        new_w,
-    ) != (
-        h0,
-        w0,
-    ):
-
-        im = cv2.resize(
-            im,
-            (
-                new_w,
-                new_h,
-            ),
-            interpolation=cv2.INTER_LINEAR,
+    elif im.ndim != 3 or im.shape[2] != 3:
+        raise ValueError(
+            f"Unexpected image shape after preprocessing: "
+            f"{im.shape}"
         )
 
-    im = np.ascontiguousarray(
-        im,
-        dtype=np.uint8,
-    )
-
-    return (
-        im,
-        (h0, w0),
-        im.shape[:2],
-    )
+    return im
 
 
 # ============================================================
-# CUSTOM DICOM YOLO DATASET
+# DICOM YOLO DATASET
 # ============================================================
 
-class DICOMYOLODataset(
-    YOLODataset
-):
+class DICOMYOLODataset(YOLODataset):
 
     def __init__(
         self,
         *args,
-        ram_cache=False,
-        ram_cache_name="dataset",
-        windowing_method=WINDOWING_METHOD,
-        calc_window=CALC_WINDOW,
-        voi_func=VOI_FUNC,
+        windowing_method=DEFAULT_METHOD,
+        calc_window=DEFAULT_CALC_WINDOW,
+        voi_func=DEFAULT_VOI_FUNC,
         **kwargs,
     ):
 
-        self.ram_cache_enabled = bool(
-            ram_cache
-        )
-
-        self.ram_cache_name = str(
-            ram_cache_name
-        )
-
-        self.windowing_method = str(
-            windowing_method
-        )
-
-        self.calc_window = bool(
-            calc_window
-        )
-
-        self.voi_func = str(
-            voi_func
-        )
-
-        self._ram_cache = {}
+        self.windowing_method = windowing_method
+        self.calc_window = calc_window
+        self.voi_func = voi_func
 
         super().__init__(
             *args,
             **kwargs,
         )
 
-        if self.ram_cache_enabled:
+    # --------------------------------------------------------
+    # LABELS
+    # --------------------------------------------------------
 
-            self._build_ram_cache()
-
-    def get_labels(
-        self
-    ):
+    def get_labels(self):
 
         labels = []
 
         for im_file in self.im_files:
 
-            im_path = Path(
-                im_file
-            )
-
-            split = (
-                im_path.parent.name
-            )
+            im_path = Path(im_file)
 
             label_path = (
-                DATASET
+                im_path.parent.parent
                 / "labels"
-                / split
+                / im_path.parent.name
                 / f"{im_path.stem}.txt"
             )
 
-            image_id = im_path.stem
+            if not label_path.exists():
 
-            if (
-                image_id
-                not in IMAGE_DIMS
-            ):
-
-                raise KeyError(
-                    f"No trobo dimensions al CSV "
-                    f"per image_id={image_id}"
-                )
-
-            h, w = IMAGE_DIMS[
-                image_id
-            ]
-
-            cls_list = []
-            bbox_list = []
-
-            if label_path.exists():
-
-                text = (
-                    label_path
-                    .read_text()
-                    .strip()
-                )
-
-                if text:
-
-                    for line in text.splitlines():
-
-                        parts = line.split()
-
-                        if len(parts) != 5:
-
-                            raise ValueError(
-                                f"Label incorrecte a "
-                                f"{label_path}: {line}"
-                            )
-
-                        cls_id = int(
-                            float(
-                                parts[0]
-                            )
-                        )
-
-                        x = float(
-                            parts[1]
-                        )
-
-                        y = float(
-                            parts[2]
-                        )
-
-                        bw = float(
-                            parts[3]
-                        )
-
-                        bh = float(
-                            parts[4]
-                        )
-
-                        cls_list.append(
-                            [cls_id]
-                        )
-
-                        bbox_list.append(
-                            [
-                                x,
-                                y,
-                                bw,
-                                bh,
-                            ]
-                        )
-
-            if cls_list:
-
-                cls = np.asarray(
-                    cls_list,
-                    dtype=np.float32,
-                )
-
-                bboxes = np.asarray(
-                    bbox_list,
-                    dtype=np.float32,
-                )
-
-            else:
-
+                # Empty label
                 cls = np.zeros(
                     (0, 1),
                     dtype=np.float32,
@@ -387,15 +195,92 @@ class DICOMYOLODataset(
                     dtype=np.float32,
                 )
 
+            else:
+
+                rows = []
+
+                with open(
+                    label_path,
+                    "r",
+                ) as f:
+
+                    for line in f:
+
+                        line = line.strip()
+
+                        if not line:
+                            continue
+
+                        values = list(
+                            map(
+                                float,
+                                line.split(),
+                            )
+                        )
+
+                        if len(values) != 5:
+                            continue
+
+                        rows.append(values)
+
+                if rows:
+
+                    arr = np.asarray(
+                        rows,
+                        dtype=np.float32,
+                    )
+
+                    cls = arr[:, 0:1]
+
+                    bboxes = arr[:, 1:5]
+
+                else:
+
+                    cls = np.zeros(
+                        (0, 1),
+                        dtype=np.float32,
+                    )
+
+                    bboxes = np.zeros(
+                        (0, 4),
+                        dtype=np.float32,
+                    )
+
+            # ------------------------------------------------
+            # IMAGE SHAPE FROM CSV
+            # ------------------------------------------------
+
+            image_id = im_path.stem
+
+            rows_csv = self.data[
+                self.data["image_id"].astype(str)
+                == image_id
+            ]
+
+            if len(rows_csv) > 0:
+
+                h = int(
+                    rows_csv.iloc[0]["height"]
+                )
+
+                w = int(
+                    rows_csv.iloc[0]["width"]
+                )
+
+            else:
+
+                ds = pydicom.dcmread(
+                    im_file,
+                    stop_before_pixels=True,
+                )
+
+                h = int(ds.Rows)
+                w = int(ds.Columns)
+
             labels.append(
                 {
-                    "im_file": str(
-                        im_file
-                    ),
-                    "shape": (
-                        h,
-                        w,
-                    ),
+                    "im_file": str(im_file),
+                    "shape": (h, w),
                     "cls": cls,
                     "bboxes": bboxes,
                     "segments": [],
@@ -408,230 +293,71 @@ class DICOMYOLODataset(
         print(
             f"[DICOM DATASET] "
             f"{len(labels)} labels carregats "
-            f"({self.ram_cache_name})",
-            flush=True,
+            f"({self.prefix.strip()})"
         )
 
         return labels
 
+    # --------------------------------------------------------
+    # IMAGE LOADING
+    # --------------------------------------------------------
+
     def _load_one(
         self,
-        i,
+        index,
     ):
 
-        return read_and_process_dicom(
-            self.im_files[i],
-            self.imgsz,
-            self.windowing_method,
-            self.calc_window,
-            self.voi_func,
+        im_file = self.im_files[index]
+
+        im = read_and_process_dicom(
+            im_file,
+            method=self.windowing_method,
+            calc_window=self.calc_window,
+            voi_func=self.voi_func,
         )
 
-    def _build_ram_cache(
-        self
-    ):
+        h0, w0 = im.shape[:2]
 
-        global RAM_CACHE_USED_BYTES
+        # ----------------------------------------------------
+        # RESIZE PRESERVING ASPECT RATIO
+        # ----------------------------------------------------
 
-        total_images = len(
-            self.im_files
+        scale = min(
+            self.imgsz / h0,
+            self.imgsz / w0,
         )
 
-        if total_images == 0:
-            return
+        if scale != 1:
 
-        print(
-            "\n"
-            + "=" * 70,
-            flush=True,
-        )
+            new_w = int(round(w0 * scale))
+            new_h = int(round(h0 * scale))
 
-        print(
-            f"[RAM CACHE] Iniciant cache: "
-            f"{self.ram_cache_name}",
-            flush=True,
-        )
-
-        print(
-            f"[RAM CACHE] Imatges: "
-            f"{total_images}",
-            flush=True,
-        )
-
-        print(
-            f"[RAM CACHE] Límit global: "
-            f"{RAM_CACHE_LIMIT_GB} GiB",
-            flush=True,
-        )
-
-        print(
-            f"[RAM CACHE] Utilitzat abans: "
-            f"{RAM_CACHE_USED_BYTES / 1024**3:.2f} GiB",
-            flush=True,
-        )
-
-        print(
-            "=" * 70,
-            flush=True,
-        )
-
-        cached_count = 0
-        processed_count = 0
-
-        for start in range(
-            0,
-            total_images,
-            CACHE_CHUNK_SIZE,
-        ):
-
-            if (
-                RAM_CACHE_USED_BYTES
-                >= RAM_CACHE_LIMIT_BYTES
-            ):
-
-                print(
-                    "[RAM CACHE] "
-                    "Límit de 120 GiB assolit.",
-                    flush=True,
-                )
-
-                break
-
-            end = min(
-                start
-                + CACHE_CHUNK_SIZE,
-                total_images,
+            im = cv2.resize(
+                im,
+                (new_w, new_h),
+                interpolation=cv2.INTER_LINEAR,
             )
 
-            indices = list(
-                range(
-                    start,
-                    end,
-                )
-            )
-
-            with ThreadPoolExecutor(
-                max_workers=min(
-                    CACHE_BUILD_WORKERS,
-                    len(indices),
-                )
-            ) as executor:
-
-                results = executor.map(
-                    self._load_one,
-                    indices,
-                )
-
-                for i, result in zip(
-                    indices,
-                    results,
-                ):
-
-                    processed_count += 1
-
-                    (
-                        im,
-                        original_shape,
-                        resized_shape,
-                    ) = result
-
-                    image_bytes = int(
-                        im.nbytes
-                    )
-
-                    if (
-                        RAM_CACHE_USED_BYTES
-                        + image_bytes
-                        <= RAM_CACHE_LIMIT_BYTES
-                    ):
-
-                        im.setflags(
-                            write=False
-                        )
-
-                        self._ram_cache[
-                            i
-                        ] = (
-                            im,
-                            original_shape,
-                            resized_shape,
-                        )
-
-                        RAM_CACHE_USED_BYTES += (
-                            image_bytes
-                        )
-
-                        cached_count += 1
-
-                    print(
-                        f"[RAM CACHE] "
-                        f"Processant "
-                        f"{processed_count}/"
-                        f"{total_images} "
-                        f"| cacheats="
-                        f"{cached_count} "
-                        f"| RAM="
-                        f"{RAM_CACHE_USED_BYTES / 1024**3:.2f}/"
-                        f"{RAM_CACHE_LIMIT_GB} GiB",
-                        flush=True,
-                    )
-
-        print(
-            "\n[RAM CACHE] "
-            f"Final {self.ram_cache_name}: "
-            f"{cached_count}/{total_images} "
-            f"imatges cachejades",
-            flush=True,
-        )
-
-        print(
-            "[RAM CACHE] RAM total utilitzada: "
-            f"{RAM_CACHE_USED_BYTES / 1024**3:.2f} GiB",
-            flush=True,
-        )
-
-        print(
-            "=" * 70,
-            flush=True,
+        return (
+            im,
+            (h0, w0),
+            im.shape[:2],
         )
 
     def load_image(
         self,
-        i,
-        *args,
-        **kwargs,
+        index,
+        rect_mode=False,
     ):
 
-        cached = self._ram_cache.get(
-            i
-        )
-
-        if cached is not None:
-
-            (
-                cached_im,
-                original_shape,
-                resized_shape,
-            ) = cached
-
-            return (
-                cached_im.copy(),
-                original_shape,
-                resized_shape,
-            )
-
-        return self._load_one(
-            i
-        )
+        return self._load_one(index)
 
 
 # ============================================================
-# CUSTOM VALIDATOR
+# VALIDATOR
 # ============================================================
 
-class DICOMValidator(
-    DetectionValidator
-):
+class DICOMValidator(DetectionValidator):
 
     def build_dataset(
         self,
@@ -640,59 +366,23 @@ class DICOMValidator(
         batch=None,
     ):
 
-        model = self.model
-
-        if hasattr(
-            model,
-            "module",
-        ):
-
-            model = model.module
-
-        stride = getattr(
-            model,
-            "stride",
-            32,
-        )
-
-        if isinstance(
-            stride,
-            torch.Tensor,
-        ):
-
-            stride = int(
-                stride.max().item()
-            )
-
-        else:
-
-            stride = int(
-                stride
-            )
-
-        gs = max(
-            stride,
-            32,
-        )
-
         return DICOMYOLODataset(
-            img_path=img_path,
+            img_path,
+            data=self.data,
+            task=self.args.task,
             imgsz=self.args.imgsz,
             batch_size=batch,
             augment=False,
             hyp=self.args,
-            rect=True,
+            rect=False,
             cache=False,
             single_cls=self.args.single_cls,
-            stride=gs,
+            stride=self.stride,
             pad=0.5,
             prefix=f"{mode}: ",
-            task=self.args.task,
             classes=self.args.classes,
             data=self.data,
-            fraction=1.0,
-            ram_cache=False,
-            ram_cache_name="val",
+            fraction=self.args.fraction,
             windowing_method=self.windowing_method,
             calc_window=self.calc_window,
             voi_func=self.voi_func,
@@ -700,12 +390,10 @@ class DICOMValidator(
 
 
 # ============================================================
-# CUSTOM TRAINER
+# TRAINER
 # ============================================================
 
-class DICOMTrainer(
-    DetectionTrainer
-):
+class DICOMTrainer(DetectionTrainer):
 
     def build_dataset(
         self,
@@ -714,84 +402,35 @@ class DICOMTrainer(
         batch=None,
     ):
 
-        model = self.model
-
-        if hasattr(
-            model,
-            "module",
-        ):
-
-            model = model.module
-
-        stride = getattr(
-            model,
-            "stride",
-            32,
-        )
-
-        if isinstance(
-            stride,
-            torch.Tensor,
-        ):
-
-            stride = int(
-                stride.max().item()
-            )
-
-        else:
-
-            stride = int(
-                stride
-            )
-
         gs = max(
-            stride,
+            int(self.model.stride.max())
+            if self.model is not None
+            else 32,
             32,
-        )
-
-        use_ram_cache = (
-            RAM_CACHE_ENABLED
-            and self.args.workers > 0
         )
 
         return DICOMYOLODataset(
-            img_path=img_path,
+            img_path,
+            data=self.data,
+            task=self.args.task,
             imgsz=self.args.imgsz,
             batch_size=batch,
-            augment=(
-                mode == "train"
-            ),
+            augment=mode == "train",
             hyp=self.args,
-            rect=(
-                mode == "val"
-            ),
-            cache=False,
+            rect=False,
+            cache=self.args.cache,
             single_cls=self.args.single_cls,
             stride=gs,
-            pad=(
-                0.0
-                if mode == "train"
-                else 0.5
-            ),
+            pad=0.0 if mode == "train" else 0.5,
             prefix=f"{mode}: ",
-            task=self.args.task,
             classes=self.args.classes,
-            data=self.data,
-            fraction=(
-                self.args.fraction
-                if mode == "train"
-                else 1.0
-            ),
-            ram_cache=use_ram_cache,
-            ram_cache_name=mode,
+            fraction=self.args.fraction,
             windowing_method=self.windowing_method,
             calc_window=self.calc_window,
             voi_func=self.voi_func,
         )
 
-    def get_validator(
-        self
-    ):
+    def get_validator(self):
 
         self.loss_names = (
             "box_loss",
@@ -802,10 +441,7 @@ class DICOMTrainer(
         validator = DICOMValidator(
             self.test_loader,
             save_dir=self.save_dir,
-            args=copy(
-                self.args
-            ),
-            _callbacks=self.callbacks,
+            args=copy(self.args),
         )
 
         validator.windowing_method = (
@@ -824,52 +460,64 @@ class DICOMTrainer(
 
 
 # ============================================================
-# CREATE TRAINER
+# TRAINER CREATION
 # ============================================================
 
 def create_trainer(
-    batch=BATCH,
-    workers=WORKERS,
-    device=DEVICE,
+    windowing_method,
+    calc_window,
+    voi_func,
     resume=None,
-    windowing_method=WINDOWING_METHOD,
-    calc_window=CALC_WINDOW,
-    voi_func=VOI_FUNC,
 ):
 
-    if resume:
+    if resume is not None:
 
-        model = str(
-            resume
-        )
-
-        resume_value = str(
-            resume
-        )
+        model = str(resume)
+        resume_value = str(resume)
 
     else:
 
         model = MODEL
-
         resume_value = False
 
+    overrides = {
+
+        "model": model,
+
+        "data": str(DATA_YAML),
+
+        "epochs": EPOCHS,
+
+        "imgsz": IMG_SIZE,
+
+        "batch": BATCH,
+
+        "workers": WORKERS,
+
+        "device": DEVICE,
+
+        "cache": CACHE,
+
+        "project": str(
+            Path(
+                "/home/enric_sena/Desktop/Mammo/runs/detect"
+            )
+        ),
+
+        "name": "vindr_v2",
+
+        "exist_ok": True,
+
+        "pretrained": True,
+
+        "verbose": True,
+
+        "resume": resume_value,
+
+    }
+
     trainer = DICOMTrainer(
-        overrides={
-            "model": model,
-            "data": str(
-                DATA_YAML
-            ),
-            "task": "detect",
-            "imgsz": IMG_SIZE,
-            "batch": batch,
-            "workers": workers,
-            "device": device,
-            "cache": CACHE,
-            "mosaic": 0,
-            "mixup": 0,
-            "copy_paste": 0,
-            "resume": resume_value,
-        }
+        overrides=overrides,
     )
 
     trainer.windowing_method = (
@@ -888,31 +536,7 @@ def create_trainer(
 
 
 # ============================================================
-# MULTIPROCESSING CHECK
-# ============================================================
-
-def check_fork():
-
-    method = mp.get_start_method()
-
-    print(
-        f"[MP] multiprocessing start method: "
-        f"{method}",
-        flush=True,
-    )
-
-    if method != "fork":
-
-        raise RuntimeError(
-            "\n"
-            "ERROR: el RAM cache necessita "
-            "multiprocessing='fork'.\n"
-            f"Mètode actual: {method}\n"
-        )
-
-
-# ============================================================
-# PIPELINE TEST
+# TEST PIPELINE
 # ============================================================
 
 def test_pipeline(
@@ -921,153 +545,12 @@ def test_pipeline(
     voi_func,
 ):
 
-    print(
-        "\n"
-        + "=" * 70
-    )
-
-    print(
-        "PIPELINE TEST"
-    )
-
-    print(
-        "=" * 70
-    )
-
-    print(
-        f"[TEST] Method: {windowing_method}",
-        flush=True,
-    )
-
-    print(
-        f"[TEST] Calc window: {calc_window}",
-        flush=True,
-    )
-
-    print(
-        f"[TEST] VOI func: {voi_func}",
-        flush=True,
-    )
+    print()
+    print("=" * 70)
+    print("V2 TEST PIPELINE")
+    print("=" * 70)
 
     trainer = create_trainer(
-        batch=2,
-        workers=0,
-        device="cpu",
-        resume=None,
-        windowing_method=windowing_method,
-        calc_window=calc_window,
-        voi_func=voi_func,
-    )
-
-    loader = trainer.get_dataloader(
-        str(
-            DATASET
-            / "images"
-            / "train"
-        ),
-        batch_size=2,
-        rank=-1,
-        mode="train",
-    )
-
-    print(
-        f"[TEST] Dataset creat: "
-        f"{len(loader.dataset)} imatges",
-        flush=True,
-    )
-
-    batch = next(
-        iter(loader)
-    )
-
-    print(
-        f"[TEST] batch['img'].shape = "
-        f"{batch['img'].shape}",
-        flush=True,
-    )
-
-    print(
-        f"[TEST] batch['cls'].shape = "
-        f"{batch['cls'].shape}",
-        flush=True,
-    )
-
-    print(
-        f"[TEST] batch['bboxes'].shape = "
-        f"{batch['bboxes'].shape}",
-        flush=True,
-    )
-
-    print(
-        f"[TEST] batch['batch_idx'].shape = "
-        f"{batch['batch_idx'].shape}",
-        flush=True,
-    )
-
-    print(
-        "\nTEST SUPERAT"
-    )
-
-    print(
-        "No s'ha entrenat res."
-    )
-
-    print(
-        "No s'han creat PNG/JPG."
-    )
-
-    print(
-        "No s'han creat fitxers .npy."
-    )
-
-    print(
-        "=" * 70
-    )
-
-
-# ============================================================
-# SMOKE TEST
-# ============================================================
-
-def smoke_test(
-    windowing_method,
-    calc_window,
-    voi_func,
-):
-
-    print(
-        "\n"
-        + "=" * 70
-    )
-
-    print(
-        "SMOKE TEST"
-    )
-
-    print(
-        "=" * 70
-    )
-
-    print(
-        f"[SMOKE] Method: {windowing_method}",
-        flush=True,
-    )
-
-    print(
-        f"[SMOKE] Calc window: {calc_window}",
-        flush=True,
-    )
-
-    print(
-        f"[SMOKE] VOI func: {voi_func}",
-        flush=True,
-    )
-
-    trainer = create_trainer(
-        batch=2,
-        workers=0,
-        device="cpu",
-        resume=None,
         windowing_method=windowing_method,
         calc_window=calc_window,
         voi_func=voi_func,
@@ -1075,72 +558,78 @@ def smoke_test(
 
     trainer.setup_model()
 
-    model = trainer.model
-
-    trainer.set_model_attributes()
-
-    device = trainer.device
-
-    model = model.to(
-        device
-    )
-
-    model.train()
-
-    print(
-        f"[SMOKE] Device: {device}",
-        flush=True,
-    )
-
-    loader = trainer.get_dataloader(
-        str(
-            DATASET
-            / "images"
-            / "train"
-        ),
-        batch_size=2,
-        rank=-1,
+    dataset = trainer.build_dataset(
+        DATASET / "images" / "train",
         mode="train",
-    )
-
-    batch = next(
-        iter(loader)
+        batch=BATCH,
     )
 
     print(
-        f"[SMOKE] Batch: "
-        f"{batch['img'].shape}",
-        flush=True,
+        f"[TEST] Dataset creat: "
+        f"{len(dataset)} imatges"
     )
 
-    batch = trainer.preprocess_batch(
+    # --------------------------------------------------------
+    # DATALOADER
+    # --------------------------------------------------------
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=2,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=dataset.collate_fn,
+    )
+
+    # --------------------------------------------------------
+    # LOAD ONE BATCH
+    # --------------------------------------------------------
+
+    batch = next(iter(loader))
+
+    print(
+        f"[TEST] batch['img'].shape = "
+        f"{batch['img'].shape}"
+    )
+
+    print(
+        f"[TEST] batch['cls'].shape = "
+        f"{batch['cls'].shape}"
+    )
+
+    print(
+        f"[TEST] batch['bboxes'].shape = "
+        f"{batch['bboxes'].shape}"
+    )
+
+    print(
+        f"[TEST] batch['batch_idx'].shape = "
+        f"{batch['batch_idx'].shape}"
+    )
+
+    # --------------------------------------------------------
+    # GPU
+    # --------------------------------------------------------
+
+    imgs = batch["img"].to(
+        trainer.device,
+        non_blocking=True,
+    )
+
+    trainer.model.train()
+
+    preds = trainer.model(imgs)
+
+    print(
+        "[TEST] Forward GPU OK"
+    )
+
+    # --------------------------------------------------------
+    # LOSS
+    # --------------------------------------------------------
+
+    loss, loss_items = trainer.model.loss(
         batch
-    )
-
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=1e-3,
-        momentum=0.9,
-    )
-
-    optimizer.zero_grad(
-        set_to_none=True
-    )
-
-    loss, loss_items = model.loss(
-        batch
-    )
-
-    print(
-        f"[SMOKE] Loss raw shape: "
-        f"{tuple(loss.shape)}",
-        flush=True,
-    )
-
-    print(
-        f"[SMOKE] Loss items: "
-        f"{loss_items.detach().cpu().tolist()}",
-        flush=True,
     )
 
     if loss.numel() != 1:
@@ -1149,53 +638,45 @@ def smoke_test(
 
     else:
 
-        loss_scalar = loss.reshape(
-            ()
-        )
+        loss_scalar = loss.reshape(())
 
     print(
-        f"[SMOKE] Loss scalar: "
-        f"{loss_scalar.item():.6f}",
-        flush=True,
+        f"[TEST] Loss = "
+        f"{loss_scalar.item():.6f}"
     )
+
+    # --------------------------------------------------------
+    # BACKWARD
+    # --------------------------------------------------------
 
     loss_scalar.backward()
 
-    gradients_found = False
-
-    for parameter in model.parameters():
-
-        if parameter.grad is not None:
-
-            if torch.isfinite(
-                parameter.grad
-            ).all():
-
-                gradients_found = True
-
-                break
-
-    if not gradients_found:
-
-        raise RuntimeError(
-            "SMOKE TEST: "
-            "no s'han trobat gradients vàlids."
-        )
-
-    optimizer.step()
-
     print(
-        "\nSMOKE TEST SUPERAT!"
+        "[TEST] Backward OK"
     )
 
+    print()
+    print("=" * 70)
+    print("TEST SUPERAT")
+    print("=" * 70)
+    print()
     print(
-        "DICOM -> batch -> model -> "
-        "loss -> backward -> optimizer OK."
+        f"method      = {windowing_method}"
     )
-
     print(
-        "=" * 70
+        f"calc_window = {calc_window}"
     )
+    print(
+        f"voi_func    = {voi_func}"
+    )
+    print()
+    print(
+        "No s'han creat PNG/JPG."
+    )
+    print(
+        "No s'han creat fitxers .npy."
+    )
+    print()
 
 
 # ============================================================
@@ -1203,115 +684,51 @@ def smoke_test(
 # ============================================================
 
 def train(
+    windowing_method,
+    calc_window,
+    voi_func,
     resume=None,
-    windowing_method=WINDOWING_METHOD,
-    calc_window=CALC_WINDOW,
-    voi_func=VOI_FUNC,
 ):
 
-    check_fork()
+    print()
+    print("=" * 70)
+    print("VINDR YOLO V2 TRAINING")
+    print("=" * 70)
 
     print(
-        "\n"
-        + "=" * 70
+        f"method      = {windowing_method}"
     )
 
     print(
-        "TRAINING"
+        f"calc_window = {calc_window}"
     )
 
     print(
-        "=" * 70
+        f"voi_func    = {voi_func}"
     )
 
     print(
-        f"Model:       {MODEL}",
-        flush=True,
+        f"resume      = {resume}"
     )
 
-    print(
-        f"Image size:  {IMG_SIZE}",
-        flush=True,
-    )
-
-    print(
-        f"Batch:       {BATCH}",
-        flush=True,
-    )
-
-    print(
-        f"Workers:     {WORKERS}",
-        flush=True,
-    )
-
-    print(
-        f"Epochs:      {EPOCHS}",
-        flush=True,
-    )
-
-    print(
-        f"Device:      {DEVICE}",
-        flush=True,
-    )
-
-    print(
-        f"RAM cache:   {RAM_CACHE_LIMIT_GB} GiB",
-        flush=True,
-    )
-
-    print(
-        f"Method:      {windowing_method}",
-        flush=True,
-    )
-
-    print(
-        f"Calc window: {calc_window}",
-        flush=True,
-    )
-
-    print(
-        f"VOI func:    {voi_func}",
-        flush=True,
-    )
-
-    if resume:
-
-        print(
-            f"Resume:      {resume}",
-            flush=True,
-        )
-
-    else:
-
-        print(
-            "Resume:      NO",
-            flush=True,
-        )
-
-    print(
-        "=" * 70
-    )
+    print("=" * 70)
+    print()
 
     trainer = create_trainer(
-        batch=BATCH,
-        workers=WORKERS,
-        device=DEVICE,
-        resume=resume,
         windowing_method=windowing_method,
         calc_window=calc_window,
         voi_func=voi_func,
+        resume=resume,
     )
-
-    trainer.args.epochs = EPOCHS
 
     trainer.train()
 
 
 # ============================================================
-# MAIN
+# ARGUMENTS
 # ============================================================
 
-def main():
+def parse_args():
 
     parser = argparse.ArgumentParser()
 
@@ -1322,33 +739,29 @@ def main():
             "smoke",
             "train",
         ],
-        required=True,
-    )
-
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        help=(
-            "Path to Ultralytics "
-            "last.pt checkpoint."
-        ),
+        default="test",
     )
 
     parser.add_argument(
         "--method",
         choices=[
+            "dicom",
+            "percentile_1_99",
+            "percentile_2_98",
+            "percentile_5_95",
             "breast_tissue",
-            "calculated_window",
+            "statistical",
+            "statistical_wide",
+            "full_range",
+            "histogram_peak",
         ],
-        default=WINDOWING_METHOD,
+        default=DEFAULT_METHOD,
     )
 
     parser.add_argument(
         "--calc-window",
         dest="calc_window",
         action="store_true",
-        default=CALC_WINDOW,
     )
 
     parser.add_argument(
@@ -1357,16 +770,36 @@ def main():
         action="store_false",
     )
 
+    parser.set_defaults(
+        calc_window=DEFAULT_CALC_WINDOW
+    )
+
     parser.add_argument(
         "--voi-func",
         choices=[
             "LINEAR",
+            "LINEAR_EXACT",
             "SIGMOID",
         ],
-        default=VOI_FUNC,
+        default=DEFAULT_VOI_FUNC,
     )
 
-    args = parser.parse_args()
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+    )
+
+    return parser.parse_args()
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    args = parse_args()
 
     if args.mode == "test":
 
@@ -1376,18 +809,18 @@ def main():
             voi_func=args.voi_func,
         )
 
-    elif args.mode == "smoke":
-
-        smoke_test(
-            windowing_method=args.method,
-            calc_window=args.calc_window,
-            voi_func=args.voi_func,
-        )
-
     elif args.mode == "train":
 
         train(
+            windowing_method=args.method,
+            calc_window=args.calc_window,
+            voi_func=args.voi_func,
             resume=args.resume,
+        )
+
+    elif args.mode == "smoke":
+
+        test_pipeline(
             windowing_method=args.method,
             calc_window=args.calc_window,
             voi_func=args.voi_func,
@@ -1395,5 +828,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
