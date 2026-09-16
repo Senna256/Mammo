@@ -1,0 +1,6 @@
+names:
+- lesion
+nc: 1
+path: /home/enric_sena/Desktop/Mammo/Lesion Detection/Yolo v8/vindr_yolo_test
+train: images/train
+val: images/train

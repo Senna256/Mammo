@@ -29,6 +29,11 @@ Thumbs.db
 *.html
 *.txt
 
+# Ultralytics / YOLO
+predictions.json
+args.yaml
+train.cache
+
 
 # Data
 vindr_dataset/images/
