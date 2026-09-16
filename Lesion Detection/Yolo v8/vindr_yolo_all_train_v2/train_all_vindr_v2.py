@@ -10,10 +10,9 @@ import pandas as pd
 import pydicom
 import torch
 
+from mammo_prep.windowing import preprocess_window
 from ultralytics.data.dataset import YOLODataset
 from ultralytics.models.yolo.detect import DetectionTrainer, DetectionValidator
-
-from mammo_prep.windowing import preprocess_window
 
 
 # ============================================================
@@ -43,11 +42,13 @@ WORKERS = 8
 EPOCHS = 100
 DEVICE = 0
 
-# No fem servir el cache estàndard d'Ultralytics.
 CACHE = False
 
-# Preprocessing del paquet mammo_prep.
-# Es pot sobreescriure amb --windowing.
+
+# ============================================================
+# MAMMO_PREP CONFIG
+# ============================================================
+
 WINDOWING_METHOD = "breast_tissue"
 CALC_WINDOW = True
 VOI_FUNC = "LINEAR"
@@ -57,22 +58,14 @@ VOI_FUNC = "LINEAR"
 # RAM CACHE CONFIG
 # ============================================================
 
-# Límit màxim del cache:
-# 120 GiB = 120 * 1024**3 bytes
 RAM_CACHE_LIMIT_GB = 120
 RAM_CACHE_LIMIT_BYTES = RAM_CACHE_LIMIT_GB * 1024**3
 
 RAM_CACHE_ENABLED = True
 
-# Threads utilitzats per carregar DICOM durant
-# la construcció inicial del cache.
 CACHE_BUILD_WORKERS = 8
-
-# Nombre d'imatges que mantenim en procés simultàniament.
 CACHE_CHUNK_SIZE = 64
 
-# Comptador global.
-# Train + val comparteixen el mateix límit.
 RAM_CACHE_USED_BYTES = 0
 
 
@@ -85,18 +78,14 @@ print(
     flush=True,
 )
 
-_annotations = pd.read_csv(
-    CSV_PATH
-)
+_annotations = pd.read_csv(CSV_PATH)
 
 IMAGE_DIMS = {
     str(row.image_id): (
         int(row.height),
         int(row.width),
     )
-    for row in _annotations.itertuples(
-        index=False
-    )
+    for row in _annotations.itertuples(index=False)
 }
 
 print(
@@ -113,30 +102,12 @@ print(
 def read_and_process_dicom(
     dicom_path,
     imgsz,
-    windowing_method=WINDOWING_METHOD,
-    calc_window=CALC_WINDOW,
-    voi_func=VOI_FUNC,
+    windowing_method,
+    calc_window,
+    voi_func,
 ):
-    """
-    Llegeix un DICOM i aplica el preprocessing de mammo_prep.
-
-    No crea cap fitxer.
-    No modifica el DICOM.
-
-    Pipeline:
-        DICOM uint16
-        -> mammo_prep (method + calc_window + voi_func)
-        -> uint8
-        -> grayscale -> BGR
-        -> resize mantenint aspect ratio
-    """
-
-    dicom_path = str(
-        dicom_path
-    )
-
     ds = pydicom.dcmread(
-        dicom_path
+        str(dicom_path)
     )
 
     im = ds.pixel_array
@@ -144,8 +115,6 @@ def read_and_process_dicom(
     if im.ndim > 2:
         im = np.squeeze(im)
 
-    # MONOCHROME1:
-    # valors alts = més foscos.
     if (
         getattr(
             ds,
@@ -156,10 +125,6 @@ def read_and_process_dicom(
     ):
         im = im.max() - im
 
-    # ========================================================
-    # MAMMO_PREP
-    # ========================================================
-
     im = preprocess_window(
         im,
         dicom_dataset=ds,
@@ -168,33 +133,25 @@ def read_and_process_dicom(
         voi_func=voi_func,
     )
 
-    # Assegurem uint8 per a YOLO/OpenCV.
+    im = np.asarray(im)
+
     if im.dtype != np.uint8:
-        im = np.asarray(
-            im
-        )
 
         if np.issubdtype(
             im.dtype,
             np.floating,
         ):
-            im = np.clip(
-                im,
-                0,
-                255,
-            ).astype(
-                np.uint8
-            )
-        else:
-            im = np.clip(
-                im,
-                0,
-                255,
-            ).astype(
-                np.uint8
-            )
+            if im.max() <= 1.0:
+                im = im * 255.0
 
-    # Grayscale -> BGR.
+        im = np.clip(
+            im,
+            0,
+            255,
+        ).astype(
+            np.uint8
+        )
+
     if im.ndim == 2:
 
         im = cv2.cvtColor(
@@ -202,17 +159,18 @@ def read_and_process_dicom(
             cv2.COLOR_GRAY2BGR,
         )
 
-    elif im.ndim == 3 and im.shape[2] == 1:
+    elif (
+        im.ndim == 3
+        and im.shape[2] == 1
+    ):
 
         im = cv2.cvtColor(
             im,
             cv2.COLOR_GRAY2BGR,
         )
 
-    # Dimensions originals.
     h0, w0 = im.shape[:2]
 
-    # Resize mantenint aspect ratio.
     scale = min(
         imgsz / h0,
         imgsz / w0,
@@ -270,6 +228,9 @@ class DICOMYOLODataset(
         *args,
         ram_cache=False,
         ram_cache_name="dataset",
+        windowing_method=WINDOWING_METHOD,
+        calc_window=CALC_WINDOW,
+        voi_func=VOI_FUNC,
         **kwargs,
     ):
 
@@ -282,33 +243,17 @@ class DICOMYOLODataset(
         )
 
         self.windowing_method = str(
-            kwargs.pop(
-                "windowing_method",
-                WINDOWING_METHOD,
-            )
+            windowing_method
         )
 
         self.calc_window = bool(
-            kwargs.pop(
-                "calc_window",
-                CALC_WINDOW,
-            )
+            calc_window
         )
 
         self.voi_func = str(
-            kwargs.pop(
-                "voi_func",
-                VOI_FUNC,
-            )
+            voi_func
         )
 
-        # Índex de la imatge ->
-        #
-        # (
-        #   numpy array,
-        #   original shape,
-        #   resized shape
-        # )
         self._ram_cache = {}
 
         super().__init__(
@@ -316,26 +261,13 @@ class DICOMYOLODataset(
             **kwargs,
         )
 
-        # Construïm el cache al procés pare,
-        # abans de crear els DataLoader workers.
         if self.ram_cache_enabled:
 
             self._build_ram_cache()
 
-    # ========================================================
-    # LABELS
-    # ========================================================
-
     def get_labels(
         self
     ):
-        """
-        Carrega els labels YOLO .txt.
-
-        Cada bbox és classe 0 = lesion.
-
-        Les imatges No Finding tenen label buit.
-        """
 
         labels = []
 
@@ -482,9 +414,18 @@ class DICOMYOLODataset(
 
         return labels
 
-    # ========================================================
-    # RAM CACHE
-    # ========================================================
+    def _load_one(
+        self,
+        i,
+    ):
+
+        return read_and_process_dicom(
+            self.im_files[i],
+            self.imgsz,
+            self.windowing_method,
+            self.calc_window,
+            self.voi_func,
+        )
 
     def _build_ram_cache(
         self
@@ -577,14 +518,7 @@ class DICOMYOLODataset(
             ) as executor:
 
                 results = executor.map(
-                    lambda i:
-                        read_and_process_dicom(
-                            self.im_files[i],
-                            self.imgsz,
-                            self.windowing_method,
-                            self.calc_window,
-                            self.voi_func,
-                        ),
+                    self._load_one,
                     indices,
                 )
 
@@ -605,14 +539,12 @@ class DICOMYOLODataset(
                         im.nbytes
                     )
 
-                    # No superem el límit.
                     if (
                         RAM_CACHE_USED_BYTES
                         + image_bytes
                         <= RAM_CACHE_LIMIT_BYTES
                     ):
 
-                        # Read-only al procés pare.
                         im.setflags(
                             write=False
                         )
@@ -631,7 +563,6 @@ class DICOMYOLODataset(
 
                         cached_count += 1
 
-                    # Feedback de cada imatge.
                     print(
                         f"[RAM CACHE] "
                         f"Processant "
@@ -659,26 +590,10 @@ class DICOMYOLODataset(
             flush=True,
         )
 
-        if (
-            cached_count
-            < total_images
-        ):
-
-            print(
-                "[RAM CACHE] "
-                f"{total_images - cached_count} "
-                "imatges no han entrat al cache.",
-                flush=True,
-            )
-
         print(
             "=" * 70,
             flush=True,
         )
-
-    # ========================================================
-    # IMAGE LOADING
-    # ========================================================
 
     def load_image(
         self,
@@ -686,12 +601,6 @@ class DICOMYOLODataset(
         *args,
         **kwargs,
     ):
-        """
-        Carrega des de RAM si la imatge està cachejada.
-
-        Es retorna una còpia perquè les augmentations
-        puguin modificar-la sense tocar el cache.
-        """
 
         cached = self._ram_cache.get(
             i
@@ -705,22 +614,14 @@ class DICOMYOLODataset(
                 resized_shape,
             ) = cached
 
-            im = cached_im.copy()
-
             return (
-                im,
+                cached_im.copy(),
                 original_shape,
                 resized_shape,
             )
 
-        # Fallback:
-        # si no ha entrat al cache.
-        return read_and_process_dicom(
-            self.im_files[i],
-            self.imgsz,
-            self.windowing_method,
-            self.calc_window,
-            self.voi_func,
+        return self._load_one(
+            i
         )
 
 
@@ -738,10 +639,6 @@ class DICOMValidator(
         mode="val",
         batch=None,
     ):
-
-        # Compatible amb Ultralytics 8.4.144.
-        # No utilitzem de_parallel(),
-        # perquè no existeix en aquesta versió.
 
         model = self.model
 
@@ -794,16 +691,11 @@ class DICOMValidator(
             classes=self.args.classes,
             data=self.data,
             fraction=1.0,
-
-            ram_cache=(
-                RAM_CACHE_ENABLED
-                and self.args.workers > 0
-            ),
-
+            ram_cache=False,
             ram_cache_name="val",
-            windowing_method=self.args.windowing_method,
-            calc_window=self.args.calc_window,
-            voi_func=self.args.voi_func,
+            windowing_method=self.windowing_method,
+            calc_window=self.calc_window,
+            voi_func=self.voi_func,
         )
 
 
@@ -821,8 +713,6 @@ class DICOMTrainer(
         mode="train",
         batch=None,
     ):
-
-        # Compatible amb Ultralytics 8.4.144.
 
         model = self.model
 
@@ -859,8 +749,6 @@ class DICOMTrainer(
             32,
         )
 
-        # Test/smoke utilitzen workers=0,
-        # per tant no carreguem 120 GiB.
         use_ram_cache = (
             RAM_CACHE_ENABLED
             and self.args.workers > 0
@@ -894,13 +782,11 @@ class DICOMTrainer(
                 if mode == "train"
                 else 1.0
             ),
-
             ram_cache=use_ram_cache,
-
             ram_cache_name=mode,
-            windowing_method=self.args.windowing_method,
-            calc_window=self.args.calc_window,
-            voi_func=self.args.voi_func,
+            windowing_method=self.windowing_method,
+            calc_window=self.calc_window,
+            voi_func=self.voi_func,
         )
 
     def get_validator(
@@ -913,7 +799,7 @@ class DICOMTrainer(
             "dfl_loss",
         )
 
-        return DICOMValidator(
+        validator = DICOMValidator(
             self.test_loader,
             save_dir=self.save_dir,
             args=copy(
@@ -921,6 +807,20 @@ class DICOMTrainer(
             ),
             _callbacks=self.callbacks,
         )
+
+        validator.windowing_method = (
+            self.windowing_method
+        )
+
+        validator.calc_window = (
+            self.calc_window
+        )
+
+        validator.voi_func = (
+            self.voi_func
+        )
+
+        return validator
 
 
 # ============================================================
@@ -932,6 +832,9 @@ def create_trainer(
     workers=WORKERS,
     device=DEVICE,
     resume=None,
+    windowing_method=WINDOWING_METHOD,
+    calc_window=CALC_WINDOW,
+    voi_func=VOI_FUNC,
 ):
 
     if resume:
@@ -950,38 +853,38 @@ def create_trainer(
 
         resume_value = False
 
-    return DICOMTrainer(
+    trainer = DICOMTrainer(
         overrides={
             "model": model,
-
             "data": str(
                 DATA_YAML
             ),
-
             "task": "detect",
-
             "imgsz": IMG_SIZE,
-
             "batch": batch,
-
             "workers": workers,
-
             "device": device,
-
             "cache": CACHE,
-
             "mosaic": 0,
-
             "mixup": 0,
-
             "copy_paste": 0,
-
             "resume": resume_value,
-
-            "windowing_method": WINDOWING_METHOD,
-            "voi_func": VOI_FUNC,
         }
     )
+
+    trainer.windowing_method = (
+        windowing_method
+    )
+
+    trainer.calc_window = (
+        calc_window
+    )
+
+    trainer.voi_func = (
+        voi_func
+    )
+
+    return trainer
 
 
 # ============================================================
@@ -1005,8 +908,6 @@ def check_fork():
             "ERROR: el RAM cache necessita "
             "multiprocessing='fork'.\n"
             f"Mètode actual: {method}\n"
-            "Aturo el training per evitar "
-            "duplicar el cache de RAM.\n"
         )
 
 
@@ -1015,9 +916,9 @@ def check_fork():
 # ============================================================
 
 def test_pipeline(
-    windowing_method=WINDOWING_METHOD,
-    calc_window=CALC_WINDOW,
-    voi_func=VOI_FUNC,
+    windowing_method,
+    calc_window,
+    voi_func,
 ):
 
     print(
@@ -1033,16 +934,29 @@ def test_pipeline(
         "=" * 70
     )
 
-    global WINDOWING_METHOD, CALC_WINDOW, VOI_FUNC
-    WINDOWING_METHOD = windowing_method
-    CALC_WINDOW = calc_window
-    VOI_FUNC = voi_func
+    print(
+        f"[TEST] Method: {windowing_method}",
+        flush=True,
+    )
+
+    print(
+        f"[TEST] Calc window: {calc_window}",
+        flush=True,
+    )
+
+    print(
+        f"[TEST] VOI func: {voi_func}",
+        flush=True,
+    )
 
     trainer = create_trainer(
         batch=2,
         workers=0,
         device="cpu",
         resume=None,
+        windowing_method=windowing_method,
+        calc_window=calc_window,
+        voi_func=voi_func,
     )
 
     loader = trainer.get_dataloader(
@@ -1116,15 +1030,10 @@ def test_pipeline(
 # ============================================================
 
 def smoke_test(
-    windowing_method=WINDOWING_METHOD,
-    calc_window=CALC_WINDOW,
-    voi_func=VOI_FUNC,
+    windowing_method,
+    calc_window,
+    voi_func,
 ):
-
-    global WINDOWING_METHOD, CALC_WINDOW, VOI_FUNC
-    WINDOWING_METHOD = windowing_method
-    CALC_WINDOW = calc_window
-    VOI_FUNC = voi_func
 
     print(
         "\n"
@@ -1139,14 +1048,31 @@ def smoke_test(
         "=" * 70
     )
 
+    print(
+        f"[SMOKE] Method: {windowing_method}",
+        flush=True,
+    )
+
+    print(
+        f"[SMOKE] Calc window: {calc_window}",
+        flush=True,
+    )
+
+    print(
+        f"[SMOKE] VOI func: {voi_func}",
+        flush=True,
+    )
+
     trainer = create_trainer(
         batch=2,
         workers=0,
         device="cpu",
         resume=None,
+        windowing_method=windowing_method,
+        calc_window=calc_window,
+        voi_func=voi_func,
     )
 
-    # Inicialitzar el model.
     trainer.setup_model()
 
     model = trainer.model
@@ -1201,7 +1127,6 @@ def smoke_test(
         set_to_none=True
     )
 
-    # Forward + loss.
     loss, loss_items = model.loss(
         batch
     )
@@ -1218,7 +1143,6 @@ def smoke_test(
         flush=True,
     )
 
-    # Convertim a escalar.
     if loss.numel() != 1:
 
         loss_scalar = loss.sum()
@@ -1235,10 +1159,8 @@ def smoke_test(
         flush=True,
     )
 
-    # Backward.
     loss_scalar.backward()
 
-    # Comprovar gradients.
     gradients_found = False
 
     for parameter in model.parameters():
@@ -1260,7 +1182,6 @@ def smoke_test(
             "no s'han trobat gradients vàlids."
         )
 
-    # Optimizer.
     optimizer.step()
 
     print(
@@ -1288,8 +1209,6 @@ def train(
     voi_func=VOI_FUNC,
 ):
 
-    # Comprovem fork abans de construir
-    # el cache gran de RAM.
     check_fork()
 
     print(
@@ -1341,7 +1260,7 @@ def train(
     )
 
     print(
-        f"Windowing:   {windowing_method}",
+        f"Method:      {windowing_method}",
         flush=True,
     )
 
@@ -1373,17 +1292,14 @@ def train(
         "=" * 70
     )
 
-    # Configurem el preprocessing abans de crear el trainer.
-    global WINDOWING_METHOD, CALC_WINDOW, VOI_FUNC
-    WINDOWING_METHOD = windowing_method
-    CALC_WINDOW = calc_window
-    VOI_FUNC = voi_func
-
     trainer = create_trainer(
         batch=BATCH,
         workers=WORKERS,
         device=DEVICE,
         resume=resume,
+        windowing_method=windowing_method,
+        calc_window=calc_window,
+        voi_func=voi_func,
     )
 
     trainer.args.epochs = EPOCHS
@@ -1426,7 +1342,6 @@ def main():
             "calculated_window",
         ],
         default=WINDOWING_METHOD,
-        help="Method de windowing de mammo_prep.",
     )
 
     parser.add_argument(
@@ -1434,14 +1349,12 @@ def main():
         dest="calc_window",
         action="store_true",
         default=CALC_WINDOW,
-        help="Calcula el window abans d'aplicar la funció VOI.",
     )
 
     parser.add_argument(
         "--no-calc-window",
         dest="calc_window",
         action="store_false",
-        help="No calcula el window; utilitza el window definit pel mètode.",
     )
 
     parser.add_argument(
@@ -1451,7 +1364,6 @@ def main():
             "SIGMOID",
         ],
         default=VOI_FUNC,
-        help="Funció VOI.",
     )
 
     args = parser.parse_args()
