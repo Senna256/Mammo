@@ -2,12 +2,14 @@
 
 import argparse
 import random
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pydicom
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -47,11 +49,6 @@ WEIGHT_DECAY = 1e-4
 
 NUM_WORKERS = 4
 
-# Swin-Tiny stages used as YOLO P3/P4/P5
-#
-# Stage 1 -> stride 8  -> 192 channels
-# Stage 2 -> stride 16 -> 384 channels
-# Stage 3 -> stride 32 -> 768 channels
 SWIN_CHANNELS = (
     192,
     384,
@@ -347,14 +344,12 @@ def transform_boxes_to_roi(
             y_center + box_h / 2.0
         )
 
-        # Translate to ROI
         x_min -= roi_x1
         x_max -= roi_x1
 
         y_min -= roi_y1
         y_max -= roi_y1
 
-        # Clip
         x_min = np.clip(
             x_min,
             0,
@@ -552,8 +547,6 @@ class VindrSwinDataset(Dataset):
             / split
         )
 
-        # IMPORTANT:
-        # These .jpg files are symlinks to DICOM files.
         self.images = sorted(
             self.image_dir.glob("*.jpg")
         )
@@ -567,7 +560,8 @@ class VindrSwinDataset(Dataset):
 
         print(
             f"[{split}] images: "
-            f"{len(self.images)}"
+            f"{len(self.images)}",
+            flush=True,
         )
 
     def __len__(self):
@@ -636,30 +630,17 @@ class VindrSwinDataset(Dataset):
 
         image_path = self.images[index]
 
-        # ----------------------------------------------------
-        # DICOM
-        # ----------------------------------------------------
-
         image = preprocess_dicom(
             image_path
         )
 
-        # Original DICOM dimensions
         original_h, original_w = (
             image.shape
         )
 
-        # ----------------------------------------------------
-        # Labels
-        # ----------------------------------------------------
-
         labels = self._load_labels(
             image_path
         )
-
-        # ----------------------------------------------------
-        # Resize image
-        # ----------------------------------------------------
 
         image, resize_scale = (
             resize_keep_aspect(
@@ -671,10 +652,6 @@ class VindrSwinDataset(Dataset):
         resized_h, resized_w = (
             image.shape
         )
-
-        # ----------------------------------------------------
-        # Breast ROI
-        # ----------------------------------------------------
 
         x1, y1, x2, y2 = (
             detect_breast_roi(
@@ -691,13 +668,6 @@ class VindrSwinDataset(Dataset):
             crop.shape
         )
 
-        # ----------------------------------------------------
-        # Labels -> ROI
-        #
-        # YOLO coordinates are normalized, therefore
-        # the uniform resize above does not change them.
-        # ----------------------------------------------------
-
         labels_roi = (
             transform_boxes_to_roi(
                 labels,
@@ -710,18 +680,10 @@ class VindrSwinDataset(Dataset):
             )
         )
 
-        # ----------------------------------------------------
-        # Grayscale -> 3 channels
-        # ----------------------------------------------------
-
         crop_bgr = cv2.cvtColor(
             crop,
             cv2.COLOR_GRAY2BGR,
         )
-
-        # ----------------------------------------------------
-        # Resize + padding
-        # ----------------------------------------------------
 
         (
             final_image,
@@ -732,10 +694,6 @@ class VindrSwinDataset(Dataset):
             crop_bgr,
             self.img_size,
         )
-
-        # ----------------------------------------------------
-        # Labels -> final image
-        # ----------------------------------------------------
 
         labels_final = (
             transform_boxes_to_padded_image(
@@ -748,10 +706,6 @@ class VindrSwinDataset(Dataset):
                 self.img_size,
             )
         )
-
-        # ----------------------------------------------------
-        # Tensor
-        # ----------------------------------------------------
 
         final_image = (
             final_image.astype(
@@ -897,12 +851,9 @@ class SwinYOLO(nn.Module):
         super().__init__()
 
         print(
-            f"Loading {MODEL_NAME}..."
+            f"[INIT] Loading {MODEL_NAME}...",
+            flush=True,
         )
-
-        # ----------------------------------------------------
-        # Swin-Tiny
-        # ----------------------------------------------------
 
         self.backbone = (
             timm.create_model(
@@ -914,9 +865,10 @@ class SwinYOLO(nn.Module):
             )
         )
 
-        # ----------------------------------------------------
-        # Official Ultralytics Detect head
-        # ----------------------------------------------------
+        print(
+            "[INIT] Creating YOLOv8 Detect head...",
+            flush=True,
+        )
 
         self.detect = Detect(
             nc=num_classes,
@@ -934,23 +886,11 @@ class SwinYOLO(nn.Module):
 
     def forward(self, x):
 
-        # ----------------------------------------------------
-        # Swin
-        # ----------------------------------------------------
-
         features = self.backbone(x)
 
         swin_features = []
 
         for feat in features:
-
-            # timm Swin:
-            #
-            # [B,H,W,C]
-            #
-            # YOLO:
-            #
-            # [B,C,H,W]
 
             if feat.ndim != 4:
 
@@ -969,10 +909,6 @@ class SwinYOLO(nn.Module):
             swin_features.append(
                 feat
             )
-
-        # ----------------------------------------------------
-        # YOLO Detect
-        # ----------------------------------------------------
 
         predictions = self.detect(
             swin_features
@@ -1029,17 +965,6 @@ def compute_loss(
     predictions,
     targets,
 ):
-    """
-    Handles both possible Ultralytics behaviours:
-
-    scalar:
-        loss = tensor(...)
-
-    vector:
-        loss = tensor([box, cls, dfl])
-
-    The vector must be summed before backward().
-    """
 
     raw_loss, loss_items = criterion(
         predictions,
@@ -1112,8 +1037,9 @@ def load_checkpoint(
 ):
 
     print(
-        f"Loading checkpoint: "
-        f"{path}"
+        f"[RESUME] Loading checkpoint: "
+        f"{path}",
+        flush=True,
     )
 
     checkpoint = torch.load(
@@ -1162,8 +1088,9 @@ def load_checkpoint(
         )
 
     print(
-        f"Resuming from epoch "
-        f"{start_epoch}"
+        f"[RESUME] Starting from epoch "
+        f"{start_epoch}",
+        flush=True,
     )
 
     return (
@@ -1276,9 +1203,8 @@ def run_test():
             f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
         )
 
-    # --------------------------------------------------------
-    # DATASET
-    # --------------------------------------------------------
+    print()
+    print("[TEST] Loading dataset...")
 
     dataset = VindrSwinDataset(
         DATASET,
@@ -1295,14 +1221,10 @@ def run_test():
         collate_fn=collate_fn,
     )
 
-    # --------------------------------------------------------
-    # MODEL
-    # --------------------------------------------------------
+    print("[TEST] Dataset ready.")
 
     print()
-    print(
-        "Creating model..."
-    )
+    print("[TEST] Creating model...")
 
     model = SwinYOLO(
         img_size=IMG_SIZE,
@@ -1321,6 +1243,8 @@ def run_test():
             device=DEVICE,
         )
     )
+
+    print("[TEST] Creating loss...")
 
     criterion = create_loss(
         model
@@ -1341,10 +1265,6 @@ def run_test():
         enabled=amp_enabled,
     )
 
-    # --------------------------------------------------------
-    # PARAMETERS
-    # --------------------------------------------------------
-
     total_params = sum(
         p.numel()
         for p in model.parameters()
@@ -1357,14 +1277,9 @@ def run_test():
         f"{total_params / 1e6:.2f} M"
     )
 
-    # --------------------------------------------------------
-    # FIND POSITIVE SAMPLE
-    # --------------------------------------------------------
-
     print()
     print(
-        "Searching for a training image "
-        "with at least one lesion..."
+        "[TEST] Searching for positive sample..."
     )
 
     found = False
@@ -1391,7 +1306,7 @@ def run_test():
         )
 
     print(
-        "Positive sample found."
+        "[TEST] Positive sample found."
     )
 
     print(
@@ -1407,10 +1322,6 @@ def run_test():
     print(
         f"DICOM: {paths[0]}"
     )
-
-    # --------------------------------------------------------
-    # TARGETS
-    # --------------------------------------------------------
 
     print()
     print(
@@ -1430,10 +1341,6 @@ def run_test():
         targets["cls"]
     )
 
-    # --------------------------------------------------------
-    # DEVICE
-    # --------------------------------------------------------
-
     images = images.to(
         DEVICE,
         non_blocking=True,
@@ -1447,13 +1354,9 @@ def run_test():
         for k, v in targets.items()
     }
 
-    # --------------------------------------------------------
-    # FORWARD
-    # --------------------------------------------------------
-
     print()
     print(
-        "Forward pass..."
+        "[TEST] Forward pass..."
     )
 
     model.train()
@@ -1467,22 +1370,17 @@ def run_test():
             images
         )
 
-    print()
     print(
-        "YOLO Detect output:"
+        "[TEST] YOLO Detect output:"
     )
 
     inspect_prediction(
         predictions
     )
 
-    # --------------------------------------------------------
-    # LOSS
-    # --------------------------------------------------------
-
     print()
     print(
-        "Computing YOLOv8 loss..."
+        "[TEST] Computing YOLOv8 loss..."
     )
 
     total_loss, loss_items, raw_loss = (
@@ -1511,29 +1409,9 @@ def run_test():
         f"{total_loss.item():.6f}"
     )
 
-    if isinstance(
-        loss_items,
-        torch.Tensor,
-    ):
-
-        print(
-            "Detached loss components:"
-        )
-
-        print(
-            loss_items.detach()
-            .float()
-            .cpu()
-            .numpy()
-        )
-
-    # --------------------------------------------------------
-    # BACKWARD
-    # --------------------------------------------------------
-
     print()
     print(
-        "Backward pass..."
+        "[TEST] Backward pass..."
     )
 
     scaler.scale(
@@ -1555,10 +1433,6 @@ def run_test():
         "Gradient norm: "
         f"{float(grad_norm):.6f}"
     )
-
-    # --------------------------------------------------------
-    # SWIN GRADIENTS
-    # --------------------------------------------------------
 
     swin_gradients = []
 
@@ -1595,10 +1469,6 @@ def run_test():
         "Mean absolute Swin gradient: "
         f"{np.mean(swin_gradients):.8e}"
     )
-
-    # --------------------------------------------------------
-    # SUCCESS
-    # --------------------------------------------------------
 
     print()
     print("=" * 70)
@@ -1652,11 +1522,20 @@ def train_one_epoch(
         DEVICE.type == "cuda"
     )
 
+    progress = tqdm(
+        loader,
+        total=len(loader),
+        desc=f"Epoch {epoch:03d} [TRAIN]",
+        unit="batch",
+        dynamic_ncols=True,
+        leave=True,
+    )
+
     for step, (
         images,
         targets,
         paths,
-    ) in enumerate(loader):
+    ) in enumerate(progress):
 
         images = images.to(
             DEVICE,
@@ -1732,13 +1611,16 @@ def train_one_epoch(
             total_loss.item()
         )
 
-        if step % 20 == 0:
+        avg_loss = (
+            running_loss
+            / (step + 1)
+        )
 
-            print(
-                f"Epoch {epoch:03d} | "
-                f"step {step:05d}/{len(loader):05d} | "
-                f"loss {total_loss.item():.5f}"
-            )
+        progress.set_postfix(
+            loss=f"{avg_loss:.5f}",
+            batch_loss=f"{total_loss.item():.5f}",
+            lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+        )
 
     return (
         running_loss
@@ -1759,7 +1641,6 @@ def validate(
 
     model.train()
 
-    # Freeze BatchNorm statistics during validation
     for module in model.modules():
 
         if isinstance(
@@ -1775,11 +1656,20 @@ def validate(
         DEVICE.type == "cuda"
     )
 
-    for (
+    progress = tqdm(
+        loader,
+        total=len(loader),
+        desc="Validation",
+        unit="batch",
+        dynamic_ncols=True,
+        leave=True,
+    )
+
+    for step, (
         images,
         targets,
         paths,
-    ) in loader:
+    ) in enumerate(progress):
 
         images = images.to(
             DEVICE,
@@ -1815,6 +1705,15 @@ def validate(
             total_loss.item()
         )
 
+        avg_loss = (
+            running_loss
+            / (step + 1)
+        )
+
+        progress.set_postfix(
+            loss=f"{avg_loss:.5f}",
+        )
+
     return (
         running_loss
         / len(loader)
@@ -1845,43 +1744,140 @@ def run_training(
     )
     print("=" * 70)
 
+    print()
+    print("[INIT] Configuration")
+
     print(
-        f"Dataset: {DATASET}"
+        f"  Dataset: {DATASET}"
     )
 
     print(
-        f"Image size: {img_size}"
+        f"  Output: {OUTPUT_DIR}"
     )
 
     print(
-        f"Batch size: {batch_size}"
+        f"  Image size: {img_size} × {img_size}"
     )
 
     print(
-        f"Gradient accumulation: "
+        f"  Batch size: {batch_size}"
+    )
+
+    print(
+        f"  Gradient accumulation: "
         f"{ACCUMULATION_STEPS}"
     )
 
     print(
-        "Effective batch size: "
+        "  Effective batch size: "
         f"{batch_size * ACCUMULATION_STEPS}"
     )
 
     print(
-        f"Epochs: {epochs}"
+        f"  Epochs: {epochs}"
     )
 
     print(
-        f"Workers: {workers}"
+        f"  Workers: {workers}"
     )
 
     print(
-        f"Device: {DEVICE}"
+        f"  Learning rate: {LEARNING_RATE}"
     )
+
+    print(
+        f"  Weight decay: {WEIGHT_DECAY}"
+    )
+
+    print(
+        f"  Device: {DEVICE}"
+    )
+
+    if torch.cuda.is_available():
+
+        print(
+            f"  GPU: "
+            f"{torch.cuda.get_device_name(0)}"
+        )
+
+        print(
+            f"  VRAM: "
+            f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
+        )
+
+    print()
+    print("[INIT] Pipeline")
+
+    print(
+        "  DICOM"
+    )
+
+    print(
+        "    ↓"
+    )
+
+    print(
+        "  breast_tissue + LINEAR"
+    )
+
+    print(
+        "    ↓"
+    )
+
+    print(
+        "  Breast ROI extraction"
+    )
+
+    print(
+        "    ↓"
+    )
+
+    print(
+        "  Resize + padding → 1024 × 1024"
+    )
+
+    print(
+        "    ↓"
+    )
+
+    print(
+        "  Swin-Tiny pretrained + trainable"
+    )
+
+    print(
+        "    ↓"
+    )
+
+    print(
+        "  P3 / P4 / P5"
+    )
+
+    print(
+        "    ↓"
+    )
+
+    print(
+        "  YOLOv8 Detect"
+    )
+
+    print(
+        "    ↓"
+    )
+
+    print(
+        "  v8DetectionLoss"
+    )
+
+    print()
 
     # --------------------------------------------------------
     # DATASETS
     # --------------------------------------------------------
+
+    print(
+        "[INIT] Loading training dataset...",
+        flush=True,
+    )
 
     train_dataset = VindrSwinDataset(
         DATASET,
@@ -1889,10 +1885,32 @@ def run_training(
         img_size,
     )
 
+    print(
+        "[INIT] Loading validation dataset...",
+        flush=True,
+    )
+
     val_dataset = VindrSwinDataset(
         DATASET,
         "val",
         img_size,
+    )
+
+    print()
+    print(
+        f"[INIT] Train images: "
+        f"{len(train_dataset):,}"
+    )
+
+    print(
+        f"[INIT] Val images: "
+        f"{len(val_dataset):,}"
+    )
+
+    print()
+    print(
+        "[INIT] Creating DataLoaders...",
+        flush=True,
     )
 
     train_loader = DataLoader(
@@ -1921,9 +1939,20 @@ def run_training(
         drop_last=False,
     )
 
+    print(
+        "[INIT] DataLoaders ready.",
+        flush=True,
+    )
+
     # --------------------------------------------------------
     # MODEL
     # --------------------------------------------------------
+
+    print()
+    print(
+        "[INIT] Building model...",
+        flush=True,
+    )
 
     model = SwinYOLO(
         img_size=img_size,
@@ -1943,18 +1972,87 @@ def run_training(
         )
     )
 
+    print(
+        "[INIT] Model ready.",
+        flush=True,
+    )
+
+    total_params = sum(
+        p.numel()
+        for p in model.parameters()
+    )
+
+    trainable_params = sum(
+        p.numel()
+        for p in model.parameters()
+        if p.requires_grad
+    )
+
+    print(
+        f"[INIT] Parameters: "
+        f"{total_params / 1e6:.2f} M total"
+    )
+
+    print(
+        f"[INIT] Trainable: "
+        f"{trainable_params / 1e6:.2f} M"
+    )
+
+    print()
+    print(
+        "[INIT] Swin features:"
+    )
+
+    print(
+        "  P3: 192 × 128 × 128 | stride 8"
+    )
+
+    print(
+        "  P4: 384 × 64 × 64   | stride 16"
+    )
+
+    print(
+        "  P5: 768 × 32 × 32   | stride 32"
+    )
+
+    # --------------------------------------------------------
+    # LOSS
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "[INIT] Creating YOLOv8 detection loss...",
+        flush=True,
+    )
+
     criterion = create_loss(
         model
+    )
+
+    print(
+        "[INIT] Detection loss ready.",
+        flush=True,
     )
 
     # --------------------------------------------------------
     # OPTIMIZER
     # --------------------------------------------------------
 
+    print()
+    print(
+        "[INIT] Creating AdamW optimizer...",
+        flush=True,
+    )
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
+    )
+
+    print(
+        "[INIT] Creating cosine scheduler...",
+        flush=True,
     )
 
     scheduler = (
@@ -1974,6 +2072,11 @@ def run_training(
         enabled=amp_enabled,
     )
 
+    print(
+        f"[INIT] AMP enabled: "
+        f"{amp_enabled}"
+    )
+
     # --------------------------------------------------------
     # RESUME
     # --------------------------------------------------------
@@ -1985,6 +2088,11 @@ def run_training(
     )
 
     if resume is not None:
+
+        print()
+        print(
+            "[INIT] Resume requested."
+        )
 
         (
             start_epoch,
@@ -1998,6 +2106,31 @@ def run_training(
         )
 
     # --------------------------------------------------------
+    # READY
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 70)
+    print(
+        "READY TO TRAIN"
+    )
+    print("=" * 70)
+
+    print(
+        f"Starting epoch: {start_epoch}"
+    )
+
+    print(
+        f"Final epoch: {epochs}"
+    )
+
+    print(
+        f"Output directory: {OUTPUT_DIR}"
+    )
+
+    print()
+
+    # --------------------------------------------------------
     # EPOCHS
     # --------------------------------------------------------
 
@@ -2005,6 +2138,8 @@ def run_training(
         start_epoch,
         epochs + 1,
     ):
+
+        epoch_start = time.time()
 
         print()
         print("=" * 70)
@@ -2024,6 +2159,11 @@ def run_training(
             f"{current_lr:.8f}"
         )
 
+        print()
+        print(
+            "Training..."
+        )
+
         # ----------------------------------------------------
         # TRAIN
         # ----------------------------------------------------
@@ -2038,6 +2178,12 @@ def run_training(
                 epoch,
                 ACCUMULATION_STEPS,
             )
+        )
+
+        print()
+        print(
+            f"Train loss: "
+            f"{train_loss:.6f}"
         )
 
         # ----------------------------------------------------
@@ -2057,9 +2203,8 @@ def run_training(
 
         print()
         print(
-            f"Epoch {epoch:03d} | "
-            f"train_loss={train_loss:.6f} | "
-            f"val_loss={val_loss:.6f}"
+            f"Validation loss: "
+            f"{val_loss:.6f}"
         )
 
         # ----------------------------------------------------
@@ -2067,6 +2212,21 @@ def run_training(
         # ----------------------------------------------------
 
         scheduler.step()
+
+        # ----------------------------------------------------
+        # TIME
+        # ----------------------------------------------------
+
+        epoch_time = (
+            time.time()
+            - epoch_start
+        )
+
+        print()
+        print(
+            f"Epoch time: "
+            f"{epoch_time / 60:.2f} min"
+        )
 
         # ----------------------------------------------------
         # LAST CHECKPOINT
@@ -2088,7 +2248,7 @@ def run_training(
         )
 
         print(
-            f"Saved: {last_path}"
+            f"[CHECKPOINT] Saved last.pt"
         )
 
         # ----------------------------------------------------
@@ -2115,9 +2275,42 @@ def run_training(
             )
 
             print(
-                "New best model: "
-                f"{best_path}"
+                f"[CHECKPOINT] New best model saved"
             )
+
+        # ----------------------------------------------------
+        # SUMMARY
+        # ----------------------------------------------------
+
+        print()
+        print("-" * 70)
+
+        print(
+            f"EPOCH {epoch}/{epochs} SUMMARY"
+        )
+
+        print(
+            f"Train loss: {train_loss:.6f}"
+        )
+
+        print(
+            f"Val loss:   {val_loss:.6f}"
+        )
+
+        print(
+            f"Best val:   {best_val_loss:.6f}"
+        )
+
+        print(
+            f"Time:       {epoch_time / 60:.2f} min"
+        )
+
+        print(
+            f"LR:         "
+            f"{optimizer.param_groups[0]['lr']:.8f}"
+        )
+
+        print("-" * 70)
 
     print()
     print("=" * 70)
