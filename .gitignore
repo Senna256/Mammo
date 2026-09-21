@@ -41,6 +41,7 @@ vindr_dataset/**/*.dicom
 data/
 outputs/
 logs/
+Multi-view-lesion-detection-in-mammography-main (2)/
 
 # Images
 *.jpg
