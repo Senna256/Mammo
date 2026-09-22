@@ -14,23 +14,23 @@ def crop_breast(img, mask=None):
     """
     Crops the image to the bounding box defined by a breast mask.
 
-    If no mask is provided, it is calculated using Otsu thresholding for
-    backwards compatibility.
+    If no mask is provided, the breast mask is calculated using
+    Otsu thresholding + connected components.
     """
+
     if mask is None:
-        _, mask = cv2.threshold(
-            img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
+        mask = get_breast_mask(img)
 
     if mask.shape != img.shape:
         raise ValueError("img and mask must have the same shape")
 
     mask = mask > 0
+
     coords = np.argwhere(mask)
 
     if len(coords) == 0:
         return img, mask.astype(np.uint8) * 255
-    
+
     y0, x0 = coords.min(axis=0)
     y1, x1 = coords.max(axis=0)
 
