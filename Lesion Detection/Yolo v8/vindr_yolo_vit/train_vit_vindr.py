@@ -188,14 +188,22 @@ class VinDrViTDataset(Dataset):
         # breast_tissue + LINEAR
         # ----------------------------------------------------
 
-        image = preprocess_window(
-            image,
-            dicom_dataset=ds,
-            method="breast_tissue",
-            voi_func="LINEAR",
-            exclude_background=True,
-            output_dtype=np.uint8,
-        )
+        try:
+            image = preprocess_window(
+                image,
+                dicom_dataset=ds,
+                method="breast_tissue",
+                voi_func="LINEAR",
+                exclude_background=True,
+                output_dtype=np.uint8,
+            )
+
+        except ValueError as e:
+            print(
+                f"\n[WINDOWING ERROR] "
+                f"image_id={image_id}: {e}"
+            )
+            raise
 
         # ----------------------------------------------------
         # STANDARD ORIENTATION
