@@ -9,6 +9,8 @@ build/
 # Virtual environments
 .venv/
 venv/
+.mammo_env/
+mammo_env/
 
 # Environment variables
 .env
@@ -42,6 +44,8 @@ data/
 outputs/
 logs/
 Multi-view-lesion-detection-in-mammography-main (2)/
+
+
 
 # Images
 *.jpg
