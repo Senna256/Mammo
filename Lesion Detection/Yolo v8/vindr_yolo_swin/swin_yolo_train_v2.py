@@ -39,7 +39,7 @@ LOCAL_DATASET = Path(
 )
 
 OUTPUT_DIR = Path(
-    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/train_v2"
+    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/train"
 )
 
 MODEL_NAME = "swin_tiny_patch4_window7_224"
