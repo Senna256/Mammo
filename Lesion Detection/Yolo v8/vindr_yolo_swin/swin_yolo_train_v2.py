@@ -35,11 +35,11 @@ ANNOTATIONS_CSV = Path(
 )
 
 LOCAL_DATASET = Path(
-    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin"
+    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo"
 )
 
 OUTPUT_DIR = Path(
-    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/train"
+    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/train_v2"
 )
 
 MODEL_NAME = "swin_tiny_patch4_window7_224"
