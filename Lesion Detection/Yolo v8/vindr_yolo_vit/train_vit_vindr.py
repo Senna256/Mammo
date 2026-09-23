@@ -1,8 +1,10 @@
+
 import os
 import time
 import copy
 import random
 import argparse
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -114,6 +116,26 @@ def set_seed(seed):
 
         torch.cuda.manual_seed_all(seed)
 
+# ============================================================
+# FIND IMAGE
+# ============================================================
+def find_image(image_id, image_root):
+
+    matches = list(
+        image_root.glob(f"*/{image_id}.jpg")
+    )
+
+    if len(matches) == 0:
+        raise FileNotFoundError(
+            f"No s'ha trobat la imatge {image_id} a {image_root}"
+        )
+
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"S'han trobat múltiples imatges per {image_id}: {matches}"
+        )
+
+    return matches[0]
 
 # ============================================================
 # DATASET
@@ -131,11 +153,12 @@ class VinDrViTDataset(Dataset):
             drop=True
         )
 
-        self.image_dir = image_dir
+        self.image_dir = Path(image_dir)
 
     def __len__(self):
 
         return len(self.df)
+
 
     def __getitem__(self, idx):
 
@@ -147,9 +170,9 @@ class VinDrViTDataset(Dataset):
             row["is_positive"]
         )
 
-        image_path = (
+        image_path = find_image(
+            image_id,
             self.image_dir
-            / f"{image_id}.jpg"
         )
 
         # ----------------------------------------------------
@@ -343,6 +366,7 @@ def train_one_epoch(
     model.train()
 
     running_loss = 0.0
+    samples_seen = 0
 
     progress = tqdm(
         dataloader,
@@ -400,19 +424,18 @@ def train_one_epoch(
 
         scaler.update()
 
+        batch_size_actual = pixel_values.size(0)
+
         running_loss += (
             loss.item()
-            * pixel_values.size(0)
+            * batch_size_actual
         )
+
+        samples_seen += batch_size_actual
 
         epoch_loss = (
             running_loss
-            / (
-                (
-                    step + 1
-                )
-                * pixel_values.size(0)
-            )
+            / samples_seen
         )
 
         progress.set_postfix(
@@ -780,28 +803,11 @@ def main():
     # IMAGE DIRECTORIES
     # --------------------------------------------------------
 
-    train_image_dir = (
-        os.path.join(
-            DATASET_ROOT,
-            "images",
-            "train",
-        )
-    )
-
-    val_image_dir = (
-        os.path.join(
-            DATASET_ROOT,
-            "images",
-            "val",
-        )
-    )
-
-    test_image_dir = (
-        os.path.join(
-            DATASET_ROOT,
-            "images",
-            "test",
-        )
+    # The ViT CSV splits do not necessarily match the physical YOLO folders.
+    # Use the common images root; find_image() searches train/val/test.
+    image_root = os.path.join(
+        DATASET_ROOT,
+        "images",
     )
 
     # --------------------------------------------------------
@@ -815,17 +821,17 @@ def main():
 
     train_dataset = VinDrViTDataset(
         train_df,
-        train_image_dir,
+        image_root,
     )
 
     val_dataset = VinDrViTDataset(
         val_df,
-        val_image_dir,
+        image_root,
     )
 
     test_dataset = VinDrViTDataset(
         test_df,
-        test_image_dir,
+        image_root,
     )
 
     print(
@@ -1028,7 +1034,7 @@ def main():
 
     print(
         f"Trainable parameters: "
-        f"{trainable_params / 1e6:.2f} M"
+        f"{trainable_params / 1e6:.4f} M"
     )
 
     optimizer = torch.optim.AdamW(
@@ -1186,7 +1192,7 @@ def main():
 
     print(
         f"Trainable parameters: "
-        f"{trainable_params / 1e6:.2f} M"
+        f"{trainable_params / 1e6:.4f} M"
     )
 
     optimizer = torch.optim.AdamW(
