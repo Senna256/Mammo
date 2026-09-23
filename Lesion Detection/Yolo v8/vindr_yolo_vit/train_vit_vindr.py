@@ -179,9 +179,64 @@ class VinDrViTDataset(Dataset):
         # DICOM
         # ----------------------------------------------------
 
-        image, ds = load_dicom(
-            image_path
-        )
+        image, ds = load_dicom(image_path)
+
+        if hasattr(ds, "PixelPaddingValue"):
+            padding_value = float(ds.PixelPaddingValue)
+
+            valid_pixels = image[image < padding_value]
+
+            if valid_pixels.size > 0:
+                image = image.copy()
+                image[image >= padding_value] = 0
+
+        try:
+            image = preprocess_window(
+                image,
+                dicom_dataset=ds,
+                method="breast_tissue",
+                voi_func="LINEAR",
+                exclude_background=True,
+                output_dtype=np.uint8,
+            )
+
+        except ValueError as e:
+
+            if "window_width must be > 0" not in str(e) and \
+            "No valid pixels available for window calculation" not in str(e):
+                raise
+
+            print(
+                f"\n[WINDOWING FALLBACK] "
+                f"image_id={image_id}"
+            )
+
+            valid_pixels = image[image > 0]
+
+            if valid_pixels.size == 0:
+                raise ValueError(
+                    f"No hi ha píxels vàlids després d'eliminar el padding: {image_id}"
+                )
+
+            low, high = np.percentile(
+                valid_pixels,
+                [1, 99]
+            )
+
+            if high <= low:
+                low = float(valid_pixels.min())
+                high = float(valid_pixels.max())
+
+            if high <= low:
+                raise ValueError(
+                    f"Imatge constant després del preprocessing: {image_id}"
+                )
+
+            image = np.clip(
+                (image - low) / (high - low) * 255.0,
+                0,
+                255,
+            ).astype(np.uint8)
 
         # ----------------------------------------------------
         # WINDOWING
