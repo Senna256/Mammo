@@ -80,4 +80,4 @@ This work was funded by Proyecto PID2024-157201OB-C21 (IMPACT), financed by MICI
 ## Authors
 
 - **Enric** ([@Senna256](https://github.com/Senna256)) — PhD student, [ViCOROB](https://vicorob.udg.edu/), University of Girona · [ORCID](https://orcid.org/0009-0005-6355-2165)
-- **Dr. Robert Martí** (supervisor) — [ViCOROB](https://vicorob.udg.edu/), University of Girona · [ORCID](https://orcid.org/0000-0002-8080-2710)
+- **Dr. Robert Martí** ([@rmartimarly](https://github.com/rmartimarly)) (supervisor)  — [ViCOROB](https://vicorob.udg.edu/), University of Girona · [ORCID](https://orcid.org/0000-0002-8080-2710)
