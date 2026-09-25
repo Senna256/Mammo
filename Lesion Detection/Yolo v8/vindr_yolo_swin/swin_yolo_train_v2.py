@@ -27,11 +27,11 @@ from ultralytics.utils.loss import v8DetectionLoss
 # ============================================================
 
 NETWORK_IMAGES = Path(
-    "/mnt/cafetera/mammo/vindr/images"
+    "/home/enric/Datasets/Original/vindr/images"
 )
 
 ANNOTATIONS_CSV = Path(
-    "/mnt/cafetera/mammo/vindr/finding_annotations.csv"
+    "/home/enric/Datasets/Original/vindr/finding_annotations.csv"
 )
 
 LOCAL_DATASET = Path(
