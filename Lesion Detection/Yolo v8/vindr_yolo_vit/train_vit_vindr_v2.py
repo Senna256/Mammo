@@ -45,7 +45,8 @@ NETWORK_IMAGES = Path(
     "/home/enric/Datasets/Original/vindr/images"
 )
 
-SPLIT_ROOT = "/home/enric_sena/Desktop/Mammo/Lesion Detection/Yolo v8/vindr_yolo_vit/vit_splits"
+SPLIT_ROOT = "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_vit/vit_splits"
+
 
 TRAIN_CSV = os.path.join(
     SPLIT_ROOT,
