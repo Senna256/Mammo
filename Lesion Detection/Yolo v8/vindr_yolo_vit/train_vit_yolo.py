@@ -35,7 +35,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-from transformers import ViTForImageClassification
+from transformers import ViTModel
 
 from ultralytics.nn.modules import Detect
 from ultralytics.utils.loss import v8DetectionLoss
@@ -978,11 +978,14 @@ class ViTYOLO(nn.Module):
             flush=True,
         )
 
-        self.vit_classifier = (
-            ViTForImageClassification.from_pretrained(
-                MODEL_NAME,
-                num_labels=2,
-            )
+        # Load the ViT backbone directly. We do not instantiate
+        # ViTForImageClassification here because its original
+        # ImageNet classifier has 1000 outputs, while the previously
+        # trained VinDr classifier has 2 outputs. The classifier head
+        # is not needed for the YOLO detector.
+        self.backbone = ViTModel.from_pretrained(
+            MODEL_NAME,
+            add_pooling_layer=False,
         )
 
         if (
@@ -992,7 +995,7 @@ class ViTYOLO(nn.Module):
 
             print(
                 "[INIT] Loading previously trained "
-                "ViT classifier:",
+                "ViT backbone:",
                 pretrained_classifier,
                 flush=True,
             )
@@ -1002,19 +1005,46 @@ class ViTYOLO(nn.Module):
                 map_location="cpu",
             )
 
+            if "state_dict" in state:
+                state = state["state_dict"]
+
+            vit_state = {
+                key.replace("vit.", "", 1): value
+                for key, value in state.items()
+                if key.startswith("vit.")
+            }
+
+            if not vit_state:
+                raise RuntimeError(
+                    "No 'vit.*' weights found in the checkpoint: "
+                    f"{pretrained_classifier}"
+                )
+
             missing, unexpected = (
-                self.vit_classifier.load_state_dict(
-                    state,
+                self.backbone.load_state_dict(
+                    vit_state,
                     strict=False,
                 )
             )
 
             print(
-                f"[INIT] ViT checkpoint loaded. "
+                f"[INIT] ViT backbone loaded. "
                 f"Missing={len(missing)}, "
                 f"Unexpected={len(unexpected)}",
                 flush=True,
             )
+
+            if missing:
+                print(
+                    f"[INIT] Missing keys: {missing}",
+                    flush=True,
+                )
+
+            if unexpected:
+                print(
+                    f"[INIT] Unexpected keys: {unexpected}",
+                    flush=True,
+                )
 
         else:
 
@@ -1022,9 +1052,6 @@ class ViTYOLO(nn.Module):
                 "[INIT] Using HuggingFace pretrained ViT.",
                 flush=True,
             )
-
-        # Keep ONLY the ViT backbone.
-        self.backbone = self.vit_classifier.vit
 
         hidden = (
             self.backbone.config.hidden_size
