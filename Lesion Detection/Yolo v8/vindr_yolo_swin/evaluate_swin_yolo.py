@@ -69,7 +69,7 @@ MAX_VISUALIZATIONS = 100
 MAX_EVAL_IMAGES = None
 
 IOU_THRESHOLDS = np.arange(
-    0.50,
+    0.1,
     0.96,
     0.05,
 )
@@ -1408,6 +1408,10 @@ def main():
 
     ap_values = []
 
+    # New:
+    # Store complete statistics for every IoU threshold.
+    iou_statistics = {}
+
     total_tp = 0
 
     total_fp = 0
@@ -1431,12 +1435,69 @@ def main():
             ap
         )
 
-        metrics[
+        threshold_key = (
+            f"{threshold:.2f}"
+        )
+
+        ap_key = (
             f"AP@{threshold:.2f}"
+        )
+
+        # TPR = TP / (TP + FN)
+        tpr = (
+            tp
+            /
+            max(
+                tp + fn,
+                1,
+            )
+        )
+
+        # Keep the original AP keys.
+        metrics[
+            ap_key
         ] = float(
             ap
         )
 
+        # Add TP, FP, FN and TPR for every IoU.
+        metrics[
+            f"TP@{threshold:.2f}"
+        ] = int(
+            tp
+        )
+
+        metrics[
+            f"FP@{threshold:.2f}"
+        ] = int(
+            fp
+        )
+
+        metrics[
+            f"FN@{threshold:.2f}"
+        ] = int(
+            fn
+        )
+
+        metrics[
+            f"TPR@{threshold:.2f}"
+        ] = float(
+            tpr
+        )
+
+        # Also store a structured version.
+        iou_statistics[
+            threshold_key
+        ] = {
+            "AP": float(ap),
+            "TP": int(tp),
+            "FP": int(fp),
+            "FN": int(fn),
+            "TPR": float(tpr),
+        }
+
+        # The global precision/recall/F1 remain
+        # defined at IoU = 0.50.
         if np.isclose(
             threshold,
             0.50,
@@ -1448,13 +1509,32 @@ def main():
 
             total_fn = fn
 
+    metrics[
+        "iou_statistics"
+    ] = iou_statistics
+
     map50 = metrics[
         "AP@0.50"
     ]
 
+    # Standard mAP@0.50:0.95:
+    # mean AP over IoU thresholds 0.50, 0.55, ..., 0.95.
+    standard_map_thresholds = [
+        threshold
+        for threshold in IOU_THRESHOLDS
+        if threshold >= 0.50
+    ]
+
+    standard_map_values = [
+        metrics[
+            f"AP@{threshold:.2f}"
+        ]
+        for threshold in standard_map_thresholds
+    ]
+
     map50_95 = float(
         np.mean(
-            ap_values
+            standard_map_values
         )
     )
 
@@ -1646,24 +1726,55 @@ def main():
 
     print()
 
+    # ========================================================
+    # AP / TP / FP / FN / TPR BY IOU
+    # ========================================================
+
     print(
-        "AP BY IOU THRESHOLD"
+        "METRICS BY IOU THRESHOLD"
     )
 
     print(
-        "-" * 40
+        "-" * 75
+    )
+
+    print(
+        f"{'IoU':>6} "
+        f"{'AP':>12} "
+        f"{'TP':>8} "
+        f"{'FP':>8} "
+        f"{'FN':>8} "
+        f"{'TPR':>12}"
+    )
+
+    print(
+        "-" * 75
     )
 
     for threshold in IOU_THRESHOLDS:
 
-        key = (
-            f"AP@{threshold:.2f}"
+        threshold_key = (
+            f"{threshold:.2f}"
+        )
+
+        stats = (
+            iou_statistics[
+                threshold_key
+            ]
         )
 
         print(
-            f"{key}: "
-            f"{metrics[key]:.6f}"
+            f"{float(threshold):6.2f} "
+            f"{stats['AP']:12.6f} "
+            f"{stats['TP']:8d} "
+            f"{stats['FP']:8d} "
+            f"{stats['FN']:8d} "
+            f"{stats['TPR']:12.6f}"
         )
+
+    print(
+        "-" * 75
+    )
 
     print(
         "=" * 70
@@ -1780,25 +1891,54 @@ def main():
             f"{total_fn}\n\n"
         )
 
+        # ====================================================
+        # COMPLETE IOU TABLE
+        # ====================================================
+
         f.write(
-            "AP BY IOU THRESHOLD\n"
+            "METRICS BY IOU THRESHOLD\n"
         )
 
         f.write(
-            "-" * 40
+            "-" * 75
+            +
+            "\n"
+        )
+
+        f.write(
+            f"{'IoU':>6} "
+            f"{'AP':>12} "
+            f"{'TP':>8} "
+            f"{'FP':>8} "
+            f"{'FN':>8} "
+            f"{'TPR':>12}\n"
+        )
+
+        f.write(
+            "-" * 75
             +
             "\n"
         )
 
         for threshold in IOU_THRESHOLDS:
 
-            key = (
-                f"AP@{threshold:.2f}"
+            threshold_key = (
+                f"{threshold:.2f}"
+            )
+
+            stats = (
+                iou_statistics[
+                    threshold_key
+                ]
             )
 
             f.write(
-                f"{key}: "
-                f"{metrics[key]:.6f}\n"
+                f"{float(threshold):6.2f} "
+                f"{stats['AP']:12.6f} "
+                f"{stats['TP']:8d} "
+                f"{stats['FP']:8d} "
+                f"{stats['FN']:8d} "
+                f"{stats['TPR']:12.6f}\n"
             )
 
     print(
