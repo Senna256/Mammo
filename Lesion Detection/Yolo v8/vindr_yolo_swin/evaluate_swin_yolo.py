@@ -2,6 +2,7 @@
 
 import csv
 import json
+import shutil
 from pathlib import Path
 
 import cv2
@@ -43,7 +44,9 @@ OUTPUT_DIR = Path(
     "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/evaluation"
 )
 
-VISUALIZATION_DIR = OUTPUT_DIR / "visualizations"
+VISUALIZATION_DIR = (
+    OUTPUT_DIR / "visualizations"
+)
 
 IMG_SIZE = 1024
 
@@ -62,6 +65,8 @@ MAX_DETECTIONS = 300
 VISUAL_CONF_THRESHOLD = 0.25
 
 MAX_VISUALIZATIONS = 100
+
+MAX_EVAL_IMAGES = None
 
 IOU_THRESHOLDS = np.arange(
     0.50,
@@ -85,7 +90,11 @@ def box_iou(
     boxes2,
 ):
 
-    if len(boxes1) == 0 or len(boxes2) == 0:
+    if (
+        len(boxes1) == 0
+        or
+        len(boxes2) == 0
+    ):
 
         return np.zeros(
             (
@@ -108,24 +117,32 @@ def box_iou(
     area1 = (
         np.maximum(
             0,
-            boxes1[:, 2] - boxes1[:, 0],
+            boxes1[:, 2]
+            -
+            boxes1[:, 0],
         )
         *
         np.maximum(
             0,
-            boxes1[:, 3] - boxes1[:, 1],
+            boxes1[:, 3]
+            -
+            boxes1[:, 1],
         )
     )
 
     area2 = (
         np.maximum(
             0,
-            boxes2[:, 2] - boxes2[:, 0],
+            boxes2[:, 2]
+            -
+            boxes2[:, 0],
         )
         *
         np.maximum(
             0,
-            boxes2[:, 3] - boxes2[:, 1],
+            boxes2[:, 3]
+            -
+            boxes2[:, 1],
         )
     )
 
@@ -194,12 +211,18 @@ def xywhn_to_xyxy(
         width = box[3]
         height = box[4]
 
-    else:
+    elif box.shape[0] == 4:
 
         x_center = box[0]
         y_center = box[1]
         width = box[2]
         height = box[3]
+
+    else:
+
+        raise ValueError(
+            f"Unexpected box shape: {box.shape}"
+        )
 
     x1 = (
         x_center
@@ -325,11 +348,9 @@ def decode_detect_output(
             "scores" in output
         ):
 
-            decoded = model.detect._inference(
+            return model.detect._inference(
                 output
             )
-
-            return decoded
 
     if isinstance(
         output,
@@ -364,7 +385,8 @@ def load_checkpoint(
 ):
 
     print(
-        f"[CHECKPOINT] Loading: {checkpoint_path}"
+        f"[CHECKPOINT] Loading: "
+        f"{checkpoint_path}"
     )
 
     checkpoint = torch.load(
@@ -378,7 +400,9 @@ def load_checkpoint(
             "Checkpoint does not contain 'model'."
         )
 
-    state_dict = checkpoint["model"]
+    state_dict = checkpoint[
+        "model"
+    ]
 
     missing_keys, unexpected_keys = (
         model.load_state_dict(
@@ -445,6 +469,10 @@ def draw_boxes(
 
     for box in boxes:
 
+        if len(box) < 4:
+
+            continue
+
         x1, y1, x2, y2 = (
             box[:4]
         )
@@ -491,8 +519,16 @@ def draw_predictions(
 
     for prediction in predictions:
 
-        x1, y1, x2, y2, conf, cls = (
-            prediction[:6]
+        if len(prediction) < 5:
+
+            continue
+
+        x1, y1, x2, y2 = (
+            prediction[:4]
+        )
+
+        conf = float(
+            prediction[4]
         )
 
         if conf < VISUAL_CONF_THRESHOLD:
@@ -531,7 +567,7 @@ def draw_predictions(
 
         cv2.putText(
             image,
-            f"{float(conf):.3f}",
+            f"{conf:.3f}",
             (
                 x1,
                 max(
@@ -550,94 +586,7 @@ def draw_predictions(
 
 
 # ============================================================
-# MATCHING
-# ============================================================
-
-def match_predictions(
-    predictions,
-    ground_truths,
-    iou_threshold,
-):
-
-    if len(predictions) == 0:
-
-        return (
-            0,
-            0,
-            len(ground_truths),
-        )
-
-    if len(ground_truths) == 0:
-
-        return (
-            0,
-            len(predictions),
-            0,
-        )
-
-    predictions = sorted(
-        predictions,
-        key=lambda x: float(x[4]),
-        reverse=True,
-    )
-
-    matched_gt = set()
-
-    tp = 0
-
-    fp = 0
-
-    for prediction in predictions:
-
-        pred_box = prediction[:4]
-
-        ious = box_iou(
-            np.asarray(
-                [pred_box],
-                dtype=np.float32,
-            ),
-            ground_truths,
-        )[0]
-
-        best_index = int(
-            np.argmax(ious)
-        )
-
-        best_iou = float(
-            ious[best_index]
-        )
-
-        if (
-            best_iou >= iou_threshold
-            and
-            best_index not in matched_gt
-        ):
-
-            tp += 1
-
-            matched_gt.add(
-                best_index
-            )
-
-        else:
-
-            fp += 1
-
-    fn = (
-        len(ground_truths)
-        -
-        len(matched_gt)
-    )
-
-    return (
-        tp,
-        fp,
-        fn,
-    )
-
-
-# ============================================================
-# DATASET GT EXTRACTION
+# GT EXTRACTION
 # ============================================================
 
 def get_ground_truth_for_image(
@@ -699,7 +648,7 @@ def get_ground_truth_for_image(
 
 
 # ============================================================
-# AP DATA
+# AP STATISTICS
 # ============================================================
 
 def collect_ap_statistics(
@@ -712,7 +661,7 @@ def collect_ap_statistics(
 
     total_gt = 0
 
-    for image_id, gts in ground_truths.items():
+    for gts in ground_truths.values():
 
         total_gt += len(gts)
 
@@ -757,9 +706,11 @@ def collect_ap_statistics(
 
     fp_values = []
 
-    for image_id, confidence, pred_box in (
-        prediction_records
-    ):
+    for (
+        image_id,
+        confidence,
+        pred_box,
+    ) in prediction_records:
 
         gts = ground_truths.get(
             image_id,
@@ -800,7 +751,11 @@ def collect_ap_statistics(
                 gt_index
             )
 
-            if gt_index in matched[image_id]:
+            if (
+                gt_index
+                in
+                matched[image_id]
+            ):
 
                 continue
 
@@ -964,12 +919,35 @@ def main():
         f"{CHECKPOINT}"
     )
 
+    print(
+        f"Evaluation limit: "
+        f"{MAX_EVAL_IMAGES if MAX_EVAL_IMAGES is not None else 'ALL'}"
+    )
+
     print()
 
     OUTPUT_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    if VISUALIZATION_DIR.exists():
+
+        print(
+            "[INIT] Removing old visualizations..."
+        )
+
+        for file in VISUALIZATION_DIR.iterdir():
+
+            if file.is_file():
+
+                file.unlink()
+
+            elif file.is_dir():
+
+                shutil.rmtree(
+                    file
+                )
 
     VISUALIZATION_DIR.mkdir(
         parents=True,
@@ -992,9 +970,29 @@ def main():
         img_size=IMG_SIZE,
     )
 
+    total_test_images = len(
+        test_dataset
+    )
+
     print(
         f"[INIT] Test images: "
-        f"{len(test_dataset):,}"
+        f"{total_test_images:,}"
+    )
+
+    if MAX_EVAL_IMAGES is None:
+
+        eval_count = total_test_images
+
+    else:
+
+        eval_count = min(
+            MAX_EVAL_IMAGES,
+            total_test_images,
+        )
+
+    print(
+        f"[INIT] Images to evaluate: "
+        f"{eval_count:,}"
     )
 
     test_loader = DataLoader(
@@ -1065,22 +1063,60 @@ def main():
 
     visualization_count = 0
 
+    evaluated_images = 0
+
     with torch.no_grad():
 
         progress = tqdm(
             test_loader,
             desc="TEST",
             unit="batch",
+            total=(
+                eval_count
+                if BATCH_SIZE == 1
+                else None
+            ),
         )
 
-        for batch_number, (
+        for (
             images,
             targets,
             paths,
-        ) in enumerate(progress):
+        ) in progress:
 
-            if batch_number >= 10:
+            if (
+                MAX_EVAL_IMAGES is not None
+                and
+                evaluated_images
+                >=
+                MAX_EVAL_IMAGES
+            ):
+
                 break
+
+            remaining = (
+                MAX_EVAL_IMAGES
+                -
+                evaluated_images
+                if MAX_EVAL_IMAGES is not None
+                else None
+            )
+
+            if (
+                remaining is not None
+                and
+                images.shape[0]
+                >
+                remaining
+            ):
+
+                images = images[
+                    :remaining
+                ]
+
+            current_batch_size = (
+                images.shape[0]
+            )
 
             images = images.to(
                 DEVICE,
@@ -1116,33 +1152,13 @@ def main():
                 )
             )
 
-            if len(detections) > 0:
+            for batch_index in range(
+                current_batch_size
+            ):
 
-                n = len(detections[0])
-
-                if n > 0:
-
-                    max_conf = float(
-                        detections[0][:, 4].max()
-                    )
-
-                    mean_conf = float(
-                        detections[0][:, 4].mean()
-                    )
-
-                    print(
-                        f"\n[DEBUG] detections={n} "
-                        f"max_conf={max_conf:.6f} "
-                        f"mean_conf={mean_conf:.6f}"
-                    )
-
-                else:
-
-                    print(
-                        "\n[DEBUG] NMS returned 0 detections"
-                    )
-
-            for batch_index, path in enumerate(paths):
+                path = paths[
+                    batch_index
+                ]
 
                 image_id = Path(
                     path
@@ -1162,9 +1178,11 @@ def main():
                     image_id
                 ] = pred
 
-                gt = get_ground_truth_for_image(
-                    targets,
-                    batch_index,
+                gt = (
+                    get_ground_truth_for_image(
+                        targets,
+                        batch_index,
+                    )
                 )
 
                 ground_truths[
@@ -1211,104 +1229,121 @@ def main():
                     visualization_count
                     <
                     MAX_VISUALIZATIONS
+                    and
+                    (
+                        len(gt) > 0
+                        or
+                        any(
+                            len(detection) >= 5
+                            and
+                            float(
+                                detection[4]
+                            )
+                            >=
+                            VISUAL_CONF_THRESHOLD
+                            for detection in pred
+                        )
+                    )
                 ):
 
-                    valid_predictions = [
-                        detection
-                        for detection in pred
-                        if len(detection) >= 5
-                        and
-                        detection[4]
-                        >= VISUAL_CONF_THRESHOLD
-                    ]
+                    image_tensor = (
+                        images[
+                            batch_index
+                        ]
+                        .detach()
+                        .float()
+                        .cpu()
+                    )
+
+                    image_array = (
+                        image_tensor
+                        .permute(
+                            1,
+                            2,
+                            0,
+                        )
+                        .numpy()
+                    )
+
+                    image_array = (
+                        np.clip(
+                            image_array,
+                            0,
+                            1,
+                        )
+                        * 255.0
+                    ).astype(
+                        np.uint8
+                    )
 
                     if (
-                        len(valid_predictions) > 0
-                        or
-                        len(gt) > 0
+                        image_array.ndim == 3
+                        and
+                        image_array.shape[2] == 3
                     ):
 
-                        image_tensor = (
-                            images[
-                                batch_index
-                            ]
-                            .detach()
-                            .float()
-                            .cpu()
+                        image_bgr = cv2.cvtColor(
+                            image_array,
+                            cv2.COLOR_RGB2BGR,
                         )
 
-                        image_array = (
-                            image_tensor
-                            .permute(
-                                1,
-                                2,
-                                0,
-                            )
-                            .numpy()
+                    else:
+
+                        image_bgr = cv2.cvtColor(
+                            image_array[:, :, 0],
+                            cv2.COLOR_GRAY2BGR,
                         )
 
-                        image_array = (
-                            np.clip(
-                                image_array,
-                                0,
-                                1,
-                            )
-                            * 255.0
-                        ).astype(
-                            np.uint8
-                        )
+                    # GT = GREEN
 
-                        if (
-                            image_array.shape[2]
-                            == 3
-                        ):
+                    image_bgr = draw_boxes(
+                        image_bgr,
+                        gt,
+                        (
+                            0,
+                            255,
+                            0,
+                        ),
+                        2,
+                    )
 
-                            image_bgr = cv2.cvtColor(
-                                image_array,
-                                cv2.COLOR_RGB2BGR,
-                            )
+                    # PRED = RED
 
-                        else:
+                    image_bgr = draw_predictions(
+                        image_bgr,
+                        pred,
+                    )
 
-                            image_bgr = cv2.cvtColor(
-                                image_array[:, :, 0],
-                                cv2.COLOR_GRAY2BGR,
-                            )
+                    output_path = (
+                        VISUALIZATION_DIR
+                        /
+                        f"{image_id}.jpg"
+                    )
 
-                        # GT = green
+                    cv2.imwrite(
+                        str(
+                            output_path
+                        ),
+                        image_bgr,
+                    )
 
-                        image_bgr = draw_boxes(
-                            image_bgr,
-                            gt,
-                            (
-                                0,
-                                255,
-                                0,
-                            ),
-                            2,
-                        )
+                    visualization_count += 1
 
-                        # PRED = red
+                evaluated_images += 1
 
-                        image_bgr = draw_predictions(
-                            image_bgr,
-                            pred,
-                        )
+            progress.set_postfix(
+                images=evaluated_images
+            )
 
-                        output_path = (
-                            VISUALIZATION_DIR
-                            /
-                            f"{image_id}.jpg"
-                        )
+            if (
+                MAX_EVAL_IMAGES is not None
+                and
+                evaluated_images
+                >=
+                MAX_EVAL_IMAGES
+            ):
 
-                        cv2.imwrite(
-                            str(
-                                output_path
-                            ),
-                            image_bgr,
-                        )
-
-                        visualization_count += 1
+                break
 
     print(
         "\n[EVAL] Inference complete."
@@ -1427,7 +1462,9 @@ def main():
         total_tp
         /
         max(
-            total_tp + total_fp,
+            total_tp
+            +
+            total_fp,
             1,
         )
     )
@@ -1436,7 +1473,9 @@ def main():
         total_tp
         /
         max(
-            total_tp + total_fn,
+            total_tp
+            +
+            total_fn,
             1,
         )
     )
@@ -1449,63 +1488,91 @@ def main():
         recall
         /
         max(
-            precision + recall,
+            precision
+            +
+            recall,
             1e-12,
         )
     )
 
-    metrics["mAP50"] = float(
+    metrics[
+        "mAP50"
+    ] = float(
         map50
     )
 
-    metrics["mAP50-95"] = float(
+    metrics[
+        "mAP50-95"
+    ] = float(
         map50_95
     )
 
-    metrics["precision"] = float(
+    metrics[
+        "precision"
+    ] = float(
         precision
     )
 
-    metrics["recall"] = float(
+    metrics[
+        "recall"
+    ] = float(
         recall
     )
 
-    metrics["f1"] = float(
+    metrics[
+        "f1"
+    ] = float(
         f1
     )
 
-    metrics["TP"] = int(
+    metrics[
+        "TP"
+    ] = int(
         total_tp
     )
 
-    metrics["FP"] = int(
+    metrics[
+        "FP"
+    ] = int(
         total_fp
     )
 
-    metrics["FN"] = int(
+    metrics[
+        "FN"
+    ] = int(
         total_fn
     )
 
-    metrics["num_images"] = int(
+    metrics[
+        "num_images"
+    ] = int(
         len(predictions)
     )
 
-    metrics["num_ground_truth_boxes"] = int(
+    metrics[
+        "num_ground_truth_boxes"
+    ] = int(
         sum(
             len(boxes)
-            for boxes in ground_truths.values()
+            for boxes
+            in
+            ground_truths.values()
         )
     )
 
-    metrics["num_predictions"] = int(
+    metrics[
+        "num_predictions"
+    ] = int(
         sum(
             len(preds)
-            for preds in predictions.values()
+            for preds
+            in
+            predictions.values()
         )
     )
 
     # ========================================================
-    # PRINT METRICS
+    # PRINT RESULTS
     # ========================================================
 
     print(
@@ -1522,23 +1589,45 @@ def main():
     )
 
     print(
-        f"mAP@0.50:     {map50:.6f}"
+        f"Images evaluated: "
+        f"{metrics['num_images']:,}"
     )
 
     print(
-        f"mAP@0.50:0.95: {map50_95:.6f}"
+        f"GT boxes: "
+        f"{metrics['num_ground_truth_boxes']:,}"
     )
 
     print(
-        f"Precision:    {precision:.6f}"
+        f"Predictions: "
+        f"{metrics['num_predictions']:,}"
+    )
+
+    print()
+
+    print(
+        f"mAP@0.50:      "
+        f"{map50:.6f}"
     )
 
     print(
-        f"Recall:       {recall:.6f}"
+        f"mAP@0.50:0.95: "
+        f"{map50_95:.6f}"
     )
 
     print(
-        f"F1:           {f1:.6f}"
+        f"Precision:     "
+        f"{precision:.6f}"
+    )
+
+    print(
+        f"Recall:        "
+        f"{recall:.6f}"
+    )
+
+    print(
+        f"F1:            "
+        f"{f1:.6f}"
     )
 
     print()
@@ -1558,14 +1647,23 @@ def main():
     print()
 
     print(
-        f"GT boxes: "
-        f"{metrics['num_ground_truth_boxes']:,}"
+        "AP BY IOU THRESHOLD"
     )
 
     print(
-        f"Predictions: "
-        f"{metrics['num_predictions']:,}"
+        "-" * 40
     )
+
+    for threshold in IOU_THRESHOLDS:
+
+        key = (
+            f"AP@{threshold:.2f}"
+        )
+
+        print(
+            f"{key}: "
+            f"{metrics[key]:.6f}"
+        )
 
     print(
         "=" * 70
@@ -1623,11 +1721,13 @@ def main():
         )
 
         f.write(
-            f"Checkpoint: {CHECKPOINT}\n"
+            f"Checkpoint: "
+            f"{CHECKPOINT}\n"
         )
 
         f.write(
-            f"Test images: {len(predictions):,}\n"
+            f"Test images: "
+            f"{len(predictions):,}\n"
         )
 
         f.write(
@@ -1641,35 +1741,43 @@ def main():
         )
 
         f.write(
-            f"mAP@0.50: {map50:.6f}\n"
+            f"mAP@0.50: "
+            f"{map50:.6f}\n"
         )
 
         f.write(
-            f"mAP@0.50:0.95: {map50_95:.6f}\n"
+            f"mAP@0.50:0.95: "
+            f"{map50_95:.6f}\n"
         )
 
         f.write(
-            f"Precision: {precision:.6f}\n"
+            f"Precision: "
+            f"{precision:.6f}\n"
         )
 
         f.write(
-            f"Recall: {recall:.6f}\n"
+            f"Recall: "
+            f"{recall:.6f}\n"
         )
 
         f.write(
-            f"F1: {f1:.6f}\n\n"
+            f"F1: "
+            f"{f1:.6f}\n\n"
         )
 
         f.write(
-            f"TP: {total_tp}\n"
+            f"TP: "
+            f"{total_tp}\n"
         )
 
         f.write(
-            f"FP: {total_fp}\n"
+            f"FP: "
+            f"{total_fp}\n"
         )
 
         f.write(
-            f"FN: {total_fn}\n\n"
+            f"FN: "
+            f"{total_fn}\n\n"
         )
 
         f.write(
@@ -1701,6 +1809,11 @@ def main():
     print(
         f"[SAVE] Visualizations: "
         f"{VISUALIZATION_DIR}"
+    )
+
+    print(
+        f"[SAVE] Visualizations generated: "
+        f"{visualization_count}"
     )
 
     print(
