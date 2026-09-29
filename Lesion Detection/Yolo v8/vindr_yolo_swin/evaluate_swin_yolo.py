@@ -1073,11 +1073,14 @@ def main():
             unit="batch",
         )
 
-        for (
+        for batch_number, (
             images,
             targets,
             paths,
-        ) in progress:
+        ) in enumerate(progress):
+
+            if batch_number >= 10:
+                break
 
             images = images.to(
                 DEVICE,
@@ -1112,6 +1115,32 @@ def main():
                     max_det=MAX_DETECTIONS,
                 )
             )
+
+            if len(detections) > 0:
+
+                n = len(detections[0])
+
+                if n > 0:
+
+                    max_conf = float(
+                        detections[0][:, 4].max()
+                    )
+
+                    mean_conf = float(
+                        detections[0][:, 4].mean()
+                    )
+
+                    print(
+                        f"\n[DEBUG] detections={n} "
+                        f"max_conf={max_conf:.6f} "
+                        f"mean_conf={mean_conf:.6f}"
+                    )
+
+                else:
+
+                    print(
+                        "\n[DEBUG] NMS returned 0 detections"
+                    )
 
             for batch_index, path in enumerate(paths):
 
