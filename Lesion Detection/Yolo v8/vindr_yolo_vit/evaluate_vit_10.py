@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
-
 import os
-import sys
 import random
 from pathlib import Path
 
@@ -14,65 +11,74 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from transformers import ViTForImageClassification
 
+
 # ============================================================
 # CONFIG
 # ============================================================
 
-NETWORK_IMAGES = "/home/enric/Datasets/Original/vindr/images"
+NETWORK_IMAGES = Path(
+    "/home/enric/Datasets/Original/vindr/images"
+)
 
-SPLIT_ROOT = "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_vit/vit_splits"
+SPLIT_ROOT = (
+    "/home/enric/Mammo/Lesion Detection/Yolo v8/"
+    "vindr_yolo_vit/vit_splits"
+)
 
-TEST_CSV = os.path.join(SPLIT_ROOT, "vindr_test.csv")
+TEST_CSV = os.path.join(
+    SPLIT_ROOT,
+    "vindr_test.csv",
+)
 
 OUTPUT_DIR = os.path.join(
-    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_vit",
-    "evaluation_10"
+    "/home/enric/Mammo/Lesion Detection/Yolo v8/"
+    "vindr_yolo_vit",
+    "evaluation_10",
 )
 
 MODEL_NAME = "google/vit-base-patch16-224"
-
-CHECKPOINT_FINAL = os.path.join(
-    SPLIT_ROOT,
-    "vit_checkpoints",
-    "vit_vindr_final.pt"
-)
-
-CHECKPOINT_PHASE2 = os.path.join(
-    SPLIT_ROOT,
-    "vit_checkpoints",
-    "best_phase2.pt"
-)
 
 IMAGE_SIZE = 224
 
 SEED = 42
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
+)
 
-# ImageNet normalization
-MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+IMAGENET_MEAN = np.array(
+    [0.485, 0.456, 0.406],
+    dtype=np.float32,
+)
+
+IMAGENET_STD = np.array(
+    [0.229, 0.224, 0.225],
+    dtype=np.float32,
+)
 
 
 # ============================================================
-# IMPORT MAMMO PREPROCESSING
+# MAMMO PREPROCESSING
+# EXACT SAME IMPORTS AS ORIGINAL ViT SCRIPT
 # ============================================================
-
-sys.path.insert(0, "/home/enric/Mammo")
 
 from mammo_prep.io import load_dicom
 from mammo_prep.windowing import preprocess_window
-from mammo_prep.orientation import flip_to_standard
-from mammo_prep.crop import crop_breast
-from mammo_prep.resize import resize_long_side
-from mammo_prep.padding import pad_to_square
+
+from mammo_prep.artifacts import (
+    flip_to_standard,
+    crop_breast,
+    resize_long_side,
+    pad_to_square,
+)
 
 
 # ============================================================
 # SEED
 # ============================================================
 
-def set_seed(seed=42):
+def set_seed(seed):
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -82,270 +88,545 @@ def set_seed(seed=42):
 
 
 # ============================================================
+# FIND DICOM
+# ============================================================
+
+def find_image(
+    study_id,
+    image_id,
+    image_root,
+):
+
+    image_path = (
+        Path(image_root)
+        / str(study_id)
+        / f"{image_id}.dicom"
+    )
+
+    if not image_path.exists():
+
+        raise FileNotFoundError(
+            f"No s'ha trobat el DICOM:\n"
+            f"{image_path}"
+        )
+
+    return image_path
+
+
+# ============================================================
 # DATASET
+# EXACT SAME PREPROCESSING AS TRAINING SCRIPT
 # ============================================================
 
 class VinDrViTDataset(Dataset):
 
-    def __init__(self, dataframe):
+    def __init__(
+        self,
+        df,
+        network_images,
+    ):
 
-        self.df = dataframe.reset_index(drop=True)
+        self.df = df.reset_index(
+            drop=True
+        )
+
+        self.network_images = Path(
+            network_images
+        )
+
+        if not self.network_images.exists():
+
+            raise FileNotFoundError(
+                "Network image directory not found:\n"
+                f"{self.network_images}"
+            )
+
+        required_columns = [
+            "study_id",
+            "image_id",
+            "is_positive",
+        ]
+
+        for column in required_columns:
+
+            if column not in self.df.columns:
+
+                raise RuntimeError(
+                    f"Missing column in CSV: {column}"
+                )
 
     def __len__(self):
+
         return len(self.df)
 
     def __getitem__(self, idx):
 
         row = self.df.iloc[idx]
 
-        study_id = row["study_id"]
-        image_id = row["image_id"]
-        label = int(row["is_positive"])
+        image_id = str(
+            row["image_id"]
+        )
 
-        dicom_path = (
-            Path(NETWORK_IMAGES)
-            / str(study_id)
-            / f"{image_id}.dicom"
+        study_id = str(
+            row["study_id"]
+        )
+
+        label = int(
+            row["is_positive"]
+        )
+
+        image_path = find_image(
+            study_id,
+            image_id,
+            self.network_images,
         )
 
         # ----------------------------------------------------
-        # LOAD DICOM
+        # DICOM
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
-        image = load_dicom(str(dicom_path))
-
-        image = image.astype(np.float32)
+        image, ds = load_dicom(
+            image_path
+        )
 
         # ----------------------------------------------------
         # PIXEL PADDING
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
-        if hasattr(image, "dtype"):
-            pass
+        if hasattr(
+            ds,
+            "PixelPaddingValue",
+        ):
+
+            padding_value = float(
+                ds.PixelPaddingValue
+            )
+
+            valid_pixels = image[
+                image < padding_value
+            ]
+
+            if valid_pixels.size > 0:
+
+                image = image.copy()
+
+                image[
+                    image >= padding_value
+                ] = 0
 
         # ----------------------------------------------------
-        # WINDOWING
-        # Same preprocessing as training script
+        # FIRST WINDOWING
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
         try:
 
             image = preprocess_window(
                 image,
+                dicom_dataset=ds,
                 method="breast_tissue",
                 voi_func="LINEAR",
                 exclude_background=True,
                 output_dtype=np.uint8,
             )
 
-        except Exception as e:
+        except ValueError as e:
 
-            raise RuntimeError(
-                f"Windowing failed for {dicom_path}\n"
-                f"Error: {e}"
+            if (
+                "window_width must be > 0"
+                not in str(e)
+                and
+                "No valid pixels available "
+                "for window calculation"
+                not in str(e)
+            ):
+
+                raise
+
+            print(
+                f"\n[WINDOWING FALLBACK] "
+                f"image_id={image_id}"
+            )
+
+            valid_pixels = image[
+                image > 0
+            ]
+
+            if valid_pixels.size == 0:
+
+                raise ValueError(
+                    "No hi ha píxels vàlids "
+                    "després d'eliminar el padding: "
+                    f"{image_id}"
+                )
+
+            low, high = np.percentile(
+                valid_pixels,
+                [1, 99],
+            )
+
+            if high <= low:
+
+                low = float(
+                    valid_pixels.min()
+                )
+
+                high = float(
+                    valid_pixels.max()
+                )
+
+            if high <= low:
+
+                raise ValueError(
+                    "Imatge constant després "
+                    f"del preprocessing: {image_id}"
+                )
+
+            image = np.clip(
+                (
+                    (image - low)
+                    / (high - low)
+                    * 255.0
+                ),
+                0,
+                255,
+            ).astype(
+                np.uint8
             )
 
         # ----------------------------------------------------
-        # FLIP TO STANDARD
+        # SECOND WINDOWING
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
-        image = flip_to_standard(image)
+        try:
+
+            image = preprocess_window(
+                image,
+                dicom_dataset=ds,
+                method="breast_tissue",
+                voi_func="LINEAR",
+                exclude_background=True,
+                output_dtype=np.uint8,
+            )
+
+        except ValueError as e:
+
+            print(
+                f"\n[WINDOWING ERROR] "
+                f"image_id={image_id}: {e}"
+            )
+
+            raise
 
         # ----------------------------------------------------
-        # CROP BREAST
+        # STANDARD ORIENTATION
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
-        image = crop_breast(image)
+        image = flip_to_standard(
+            image,
+            ds,
+        )
+
+        # ----------------------------------------------------
+        # BREAST CROP
+        # EXACT ORIGINAL
+        # ----------------------------------------------------
+
+        image, _ = crop_breast(
+            image
+        )
 
         # ----------------------------------------------------
         # RESIZE LONG SIDE
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
         image = resize_long_side(
             image,
-            target_size=1536
+            target_size=1536,
         )
 
         # ----------------------------------------------------
         # PAD TO SQUARE
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
-        image = pad_to_square(image)
+        image = pad_to_square(
+            image
+        )
 
         # ----------------------------------------------------
-        # RESIZE TO ViT INPUT
+        # FINAL ViT SIZE
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
         image = cv2.resize(
             image,
-            (IMAGE_SIZE, IMAGE_SIZE),
+            (
+                IMAGE_SIZE,
+                IMAGE_SIZE,
+            ),
             interpolation=cv2.INTER_AREA,
         )
 
         # ----------------------------------------------------
-        # UINT8 -> FLOAT
+        # NORMALIZE 0-1
         # ----------------------------------------------------
 
-        image = image.astype(np.float32) / 255.0
+        image = (
+            image.astype(
+                np.float32
+            )
+            / 255.0
+        )
 
         # ----------------------------------------------------
         # GRAYSCALE -> RGB
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
-        if image.ndim == 2:
-
-            image = np.stack(
-                [image, image, image],
-                axis=-1
-            )
-
-        elif image.ndim == 3 and image.shape[-1] == 1:
-
-            image = np.repeat(
+        image = np.stack(
+            [
                 image,
-                3,
-                axis=-1
-            )
+                image,
+                image,
+            ],
+            axis=0,
+        )
 
         # ----------------------------------------------------
         # IMAGENET NORMALIZATION
+        # EXACT ORIGINAL
         # ----------------------------------------------------
 
-        image = (image - MEAN) / STD
-
-        # HWC -> CHW
-        image = np.transpose(
-            image,
-            (2, 0, 1)
+        mean = IMAGENET_MEAN.reshape(
+            3,
+            1,
+            1,
         )
 
-        image_tensor = torch.from_numpy(
-            image.astype(np.float32)
+        std = IMAGENET_STD.reshape(
+            3,
+            1,
+            1,
+        )
+
+        image = (
+            image - mean
+        ) / std
+
+        # ----------------------------------------------------
+        # TORCH
+        # ----------------------------------------------------
+
+        image = torch.from_numpy(
+            image
+        ).float()
+
+        label = torch.tensor(
+            label,
+            dtype=torch.long,
         )
 
         return (
-            image_tensor,
-            torch.tensor(label, dtype=torch.long),
-            str(study_id),
-            str(image_id),
+            image,
+            label,
+            study_id,
+            image_id,
         )
 
 
 # ============================================================
-# LOAD CHECKPOINT
+# LOAD MODEL
 # ============================================================
 
 def load_model():
 
-    model = ViTForImageClassification.from_pretrained(
-        MODEL_NAME,
-        num_labels=2,
-        id2label={
-            0: "no_finding",
-            1: "finding",
-        },
-        label2id={
-            "no_finding": 0,
-            "finding": 1,
-        },
-        ignore_mismatched_sizes=True,
+    print()
+    print("=" * 75)
+    print("LOADING ViT")
+    print("=" * 75)
+
+    model = (
+        ViTForImageClassification
+        .from_pretrained(
+            MODEL_NAME,
+            num_labels=2,
+            id2label={
+                0: "no_finding",
+                1: "finding",
+            },
+            label2id={
+                "no_finding": 0,
+                "finding": 1,
+            },
+            ignore_mismatched_sizes=True,
+        )
     )
 
-    # Prefer final model
-    if os.path.exists(CHECKPOINT_FINAL):
+    final_checkpoint = os.path.join(
+        SPLIT_ROOT,
+        "vit_checkpoints",
+        "vit_vindr_final.pt",
+    )
 
-        checkpoint_path = CHECKPOINT_FINAL
+    phase2_checkpoint = os.path.join(
+        SPLIT_ROOT,
+        "vit_checkpoints",
+        "best_phase2.pt",
+    )
 
-    elif os.path.exists(CHECKPOINT_PHASE2):
+    if os.path.exists(
+        final_checkpoint
+    ):
 
-        checkpoint_path = CHECKPOINT_PHASE2
+        checkpoint_path = (
+            final_checkpoint
+        )
+
+    elif os.path.exists(
+        phase2_checkpoint
+    ):
+
+        checkpoint_path = (
+            phase2_checkpoint
+        )
 
     else:
 
         raise FileNotFoundError(
             "No ViT checkpoint found.\n\n"
             f"Checked:\n"
-            f"  {CHECKPOINT_FINAL}\n"
-            f"  {CHECKPOINT_PHASE2}"
+            f"  {final_checkpoint}\n"
+            f"  {phase2_checkpoint}"
         )
 
     print()
-    print("=" * 70)
-    print("CHECKPOINT")
-    print("=" * 70)
-    print(checkpoint_path)
+    print(
+        f"Checkpoint:\n"
+        f"{checkpoint_path}"
+    )
 
     checkpoint = torch.load(
         checkpoint_path,
         map_location="cpu",
     )
 
-    # Final checkpoint:
+    # --------------------------------------------------------
+    # FINAL CHECKPOINT
     # model.state_dict()
-    if isinstance(checkpoint, dict):
+    # --------------------------------------------------------
 
-        if "model_state_dict" in checkpoint:
+    if (
+        isinstance(
+            checkpoint,
+            dict,
+        )
+        and
+        "model_state_dict"
+        in checkpoint
+    ):
 
-            state_dict = checkpoint["model_state_dict"]
-
-        else:
-
-            state_dict = checkpoint
+        state_dict = (
+            checkpoint[
+                "model_state_dict"
+            ]
+        )
 
     else:
 
         state_dict = checkpoint
 
-    # Remove possible "module." prefix
+    # Remove DataParallel prefix if present
+
     cleaned_state_dict = {}
 
-    for key, value in state_dict.items():
+    for key, value in (
+        state_dict.items()
+    ):
 
-        if key.startswith("module."):
+        if key.startswith(
+            "module."
+        ):
 
-            key = key[len("module."):]
+            key = key[
+                len("module.") :
+            ]
 
-        cleaned_state_dict[key] = value
+        cleaned_state_dict[
+            key
+        ] = value
 
-    missing, unexpected = model.load_state_dict(
-        cleaned_state_dict,
-        strict=False,
+    missing, unexpected = (
+        model.load_state_dict(
+            cleaned_state_dict,
+            strict=False,
+        )
     )
 
     if missing:
-        print(f"Missing keys: {len(missing)}")
+
+        print(
+            f"Missing keys: "
+            f"{len(missing)}"
+        )
 
     if unexpected:
-        print(f"Unexpected keys: {len(unexpected)}")
 
-    model.to(DEVICE)
+        print(
+            f"Unexpected keys: "
+            f"{len(unexpected)}"
+        )
+
+    model = model.to(
+        DEVICE
+    )
+
     model.eval()
 
-    print(f"Device: {DEVICE}")
+    print(
+        f"Device: {DEVICE}"
+    )
 
     if torch.cuda.is_available():
 
         print(
-            f"GPU: {torch.cuda.get_device_name(0)}"
+            "GPU: "
+            f"{torch.cuda.get_device_name(0)}"
         )
 
     return model, checkpoint_path
 
 
 # ============================================================
-# UNNORMALIZE IMAGE FOR DISPLAY
+# UNNORMALIZE FOR DISPLAY
 # ============================================================
 
-def tensor_to_display_image(tensor):
+def tensor_to_display(
+    tensor
+):
 
-    image = tensor.detach().cpu().numpy()
+    image = (
+        tensor
+        .detach()
+        .cpu()
+        .numpy()
+    )
 
     image = np.transpose(
         image,
-        (1, 2, 0)
+        (1, 2, 0),
     )
 
-    image = image * STD + MEAN
+    image = (
+        image
+        * IMAGENET_STD
+        + IMAGENET_MEAN
+    )
 
     image = np.clip(
         image,
@@ -357,86 +638,96 @@ def tensor_to_display_image(tensor):
 
 
 # ============================================================
-# EVALUATE 10 IMAGES
+# MAIN
 # ============================================================
 
-def evaluate_10():
+def main():
+
+    set_seed(
+        SEED
+    )
 
     os.makedirs(
         OUTPUT_DIR,
         exist_ok=True,
     )
 
+    print()
+    print("=" * 75)
+    print("ViT — 10 IMAGE EVALUATION")
+    print("=" * 75)
+
     # --------------------------------------------------------
-    # LOAD TEST CSV
+    # TEST CSV
     # --------------------------------------------------------
 
-    if not os.path.exists(TEST_CSV):
+    if not os.path.exists(
+        TEST_CSV
+    ):
 
         raise FileNotFoundError(
-            f"Test CSV not found:\n{TEST_CSV}"
+            f"Test CSV not found:\n"
+            f"{TEST_CSV}"
         )
 
-    df = pd.read_csv(TEST_CSV)
-
-    required_columns = [
-        "study_id",
-        "image_id",
-        "is_positive",
-    ]
-
-    missing_columns = [
-        col
-        for col in required_columns
-        if col not in df.columns
-    ]
-
-    if missing_columns:
-
-        raise ValueError(
-            f"Missing columns in test CSV: {missing_columns}"
-        )
+    test_df = pd.read_csv(
+        TEST_CSV
+    )
 
     print()
-    print("=" * 70)
-    print("TEST DATASET")
-    print("=" * 70)
-
-    print(f"Total test images: {len(df)}")
+    print(
+        f"Total test images: "
+        f"{len(test_df):,}"
+    )
 
     print()
-    print("Class distribution:")
+    print(
+        "Class distribution:"
+    )
 
     print(
-        df["is_positive"]
+        test_df[
+            "is_positive"
+        ]
         .value_counts()
         .sort_index()
         .to_string()
     )
 
     # --------------------------------------------------------
-    # FIRST 10 IMAGES
+    # FIRST 10
     # --------------------------------------------------------
 
-    df_10 = df.iloc[:10].copy()
+    test_10 = (
+        test_df
+        .iloc[:10]
+        .copy()
+    )
 
     print()
-    print("=" * 70)
+    print("=" * 75)
     print("10-IMAGE TEST")
-    print("=" * 70)
+    print("=" * 75)
 
     print(
-        df_10[
+        test_10[
             [
                 "study_id",
                 "image_id",
                 "is_positive",
             ]
-        ].to_string(index=False)
+        ].to_string(
+            index=False
+        )
     )
 
+    # --------------------------------------------------------
+    # DATASET
+    # --------------------------------------------------------
+
     dataset = VinDrViTDataset(
-        df_10
+        test_10,
+        NETWORK_IMAGES,
     )
 
     loader = DataLoader(
@@ -451,81 +742,120 @@ def evaluate_10():
     # MODEL
     # --------------------------------------------------------
 
-    model, checkpoint_path = load_model()
+    model, checkpoint_path = (
+        load_model()
+    )
 
     # --------------------------------------------------------
     # INFERENCE
     # --------------------------------------------------------
 
-    results = []
-
     print()
-    print("=" * 70)
+    print("=" * 75)
     print("INFERENCE")
-    print("=" * 70)
+    print("=" * 75)
+
+    results = []
 
     with torch.no_grad():
 
-        for i, batch in enumerate(loader):
+        for i, batch in enumerate(
+            loader
+        ):
 
-            images, labels, study_ids, image_ids = batch
+            (
+                images,
+                labels,
+                study_ids,
+                image_ids,
+            ) = batch
 
             images = images.to(
                 DEVICE,
                 non_blocking=True,
             )
 
-            labels = labels.to(DEVICE)
+            labels = labels.to(
+                DEVICE
+            )
 
             outputs = model(
                 pixel_values=images
             )
 
-            logits = outputs.logits
-
-            probabilities = torch.softmax(
-                logits,
-                dim=1,
+            logits = (
+                outputs.logits
             )
 
-            positive_probability = (
-                probabilities[:, 1]
+            probabilities = (
+                torch.softmax(
+                    logits,
+                    dim=1,
+                )
+            )
+
+            probability_finding = (
+                probabilities[
+                    0,
+                    1,
+                ].item()
+            )
+
+            prediction = (
+                torch.argmax(
+                    logits,
+                    dim=1,
+                )[0]
                 .item()
             )
 
-            prediction = torch.argmax(
-                logits,
-                dim=1,
-            ).item()
-
-            ground_truth = labels.item()
+            ground_truth = (
+                labels[0]
+                .item()
+            )
 
             correct = (
-                prediction == ground_truth
+                prediction
+                == ground_truth
             )
 
             result = {
+
                 "index": i,
-                "study_id": study_ids[0],
-                "image_id": image_ids[0],
-                "ground_truth": ground_truth,
-                "prediction": prediction,
-                "probability_finding": positive_probability,
-                "correct": correct,
+
+                "study_id":
+                    study_ids[0],
+
+                "image_id":
+                    image_ids[0],
+
+                "ground_truth":
+                    ground_truth,
+
+                "prediction":
+                    prediction,
+
+                "probability_finding":
+                    probability_finding,
+
+                "correct":
+                    correct,
             }
 
-            results.append(result)
-
-            gt_name = (
-                "finding"
-                if ground_truth == 1
-                else "no_finding"
+            results.append(
+                result
             )
 
-            pred_name = (
-                "finding"
+            gt_text = (
+                "FINDING"
+                if ground_truth == 1
+                else "NO_FINDING"
+            )
+
+            pred_text = (
+                "FINDING"
                 if prediction == 1
-                else "no_finding"
+                else "NO_FINDING"
             )
 
             print()
@@ -535,30 +865,90 @@ def evaluate_10():
             )
 
             print(
-                f"    GT:       {gt_name}"
+                f"    GT: "
+                f"{gt_text}"
             )
 
             print(
-                f"    Pred:     {pred_name}"
+                f"    Pred: "
+                f"{pred_text}"
             )
 
             print(
                 f"    P(finding): "
-                f"{positive_probability:.6f}"
+                f"{probability_finding:.6f}"
             )
 
             print(
-                f"    Correct:  "
+                f"    Correct: "
                 f"{'YES' if correct else 'NO'}"
             )
 
     # --------------------------------------------------------
-    # SAVE CSV
+    # RESULTS DATAFRAME
     # --------------------------------------------------------
 
     results_df = pd.DataFrame(
         results
     )
+
+    # --------------------------------------------------------
+    # CONFUSION COUNTS
+    # --------------------------------------------------------
+
+    y_true = (
+        results_df[
+            "ground_truth"
+        ].values
+    )
+
+    y_pred = (
+        results_df[
+            "prediction"
+        ].values
+    )
+
+    tp = int(
+        np.sum(
+            (y_true == 1)
+            &
+            (y_pred == 1)
+        )
+    )
+
+    tn = int(
+        np.sum(
+            (y_true == 0)
+            &
+            (y_pred == 0)
+        )
+    )
+
+    fp = int(
+        np.sum(
+            (y_true == 0)
+            &
+            (y_pred == 1)
+        )
+    )
+
+    fn = int(
+        np.sum(
+            (y_true == 1)
+            &
+            (y_pred == 0)
+        )
+    )
+
+    accuracy = (
+        np.mean(
+            y_true == y_pred
+        )
+    )
+
+    # --------------------------------------------------------
+    # SAVE CSV
+    # --------------------------------------------------------
 
     csv_path = os.path.join(
         OUTPUT_DIR,
@@ -571,84 +961,13 @@ def evaluate_10():
     )
 
     # --------------------------------------------------------
-    # METRICS
-    # --------------------------------------------------------
-
-    y_true = results_df[
-        "ground_truth"
-    ].values
-
-    y_pred = results_df[
-        "prediction"
-    ].values
-
-    accuracy = (
-        np.mean(
-            y_true == y_pred
-        )
-    )
-
-    tp = int(
-        np.sum(
-            (y_true == 1)
-            & (y_pred == 1)
-        )
-    )
-
-    tn = int(
-        np.sum(
-            (y_true == 0)
-            & (y_pred == 0)
-        )
-    )
-
-    fp = int(
-        np.sum(
-            (y_true == 0)
-            & (y_pred == 1)
-        )
-    )
-
-    fn = int(
-        np.sum(
-            (y_true == 1)
-            & (y_pred == 0)
-        )
-    )
-
-    print()
-    print("=" * 70)
-    print("RESULTS — 10 IMAGES")
-    print("=" * 70)
-
-    print(
-        f"Accuracy: {accuracy:.4f}"
-    )
-
-    print(
-        f"TP: {tp}"
-    )
-
-    print(
-        f"TN: {tn}"
-    )
-
-    print(
-        f"FP: {fp}"
-    )
-
-    print(
-        f"FN: {fn}"
-    )
-
-    # --------------------------------------------------------
     # VISUALIZATION
     # --------------------------------------------------------
 
     print()
-    print("=" * 70)
+    print("=" * 75)
     print("CREATING VISUALIZATION")
-    print("=" * 70)
+    print("=" * 75)
 
     fig, axes = plt.subplots(
         2,
@@ -660,13 +979,19 @@ def evaluate_10():
 
     for i in range(10):
 
-        image_tensor = dataset[i][0]
-
-        image = tensor_to_display_image(
-            image_tensor
+        image_tensor = (
+            dataset[i][0]
         )
 
-        row = results_df.iloc[i]
+        image = (
+            tensor_to_display(
+                image_tensor
+            )
+        )
+
+        row = (
+            results_df.iloc[i]
+        )
 
         gt = int(
             row["ground_truth"]
@@ -677,34 +1002,37 @@ def evaluate_10():
         )
 
         prob = float(
-            row["probability_finding"]
+            row[
+                "probability_finding"
+            ]
         )
 
-        gt_name = (
+        gt_text = (
             "FINDING"
             if gt == 1
             else "NO FINDING"
         )
 
-        pred_name = (
+        pred_text = (
             "FINDING"
             if pred == 1
             else "NO FINDING"
         )
 
         axes[i].imshow(
-            image,
-            cmap="gray",
+            image
         )
 
         axes[i].set_title(
-            f"GT: {gt_name}\n"
-            f"Pred: {pred_name}\n"
+            f"GT: {gt_text}\n"
+            f"Pred: {pred_text}\n"
             f"P(finding): {prob:.3f}",
             fontsize=10,
         )
 
-        axes[i].axis("off")
+        axes[i].axis(
+            "off"
+        )
 
     plt.tight_layout()
 
@@ -722,7 +1050,7 @@ def evaluate_10():
     plt.close()
 
     # --------------------------------------------------------
-    # SUMMARY FILE
+    # SUMMARY
     # --------------------------------------------------------
 
     summary_path = os.path.join(
@@ -741,23 +1069,27 @@ def evaluate_10():
         )
 
         f.write(
-            "=" * 70 + "\n\n"
+            "=" * 75
+            + "\n\n"
         )
 
         f.write(
-            f"Checkpoint: {checkpoint_path}\n"
+            f"Checkpoint: "
+            f"{checkpoint_path}\n"
         )
 
         f.write(
-            f"Device: {DEVICE}\n"
+            f"Device: "
+            f"{DEVICE}\n"
         )
 
         f.write(
-            f"Images evaluated: 10\n\n"
+            "Images evaluated: 10\n\n"
         )
 
         f.write(
-            f"Accuracy: {accuracy:.6f}\n"
+            f"Accuracy: "
+            f"{accuracy:.6f}\n"
         )
 
         f.write(
@@ -781,35 +1113,55 @@ def evaluate_10():
     # --------------------------------------------------------
 
     print()
-    print("=" * 70)
-    print("DONE")
-    print("=" * 70)
+    print("=" * 75)
+    print("RESULTS — 10 IMAGES")
+    print("=" * 75)
 
     print(
-        f"Results:       {csv_path}"
+        f"Accuracy: {accuracy:.4f}"
     )
 
     print(
-        f"Visualization: {figure_path}"
+        f"TP: {tp}"
     )
 
     print(
-        f"Summary:       {summary_path}"
+        f"TN: {tn}"
+    )
+
+    print(
+        f"FP: {fp}"
+    )
+
+    print(
+        f"FN: {fn}"
     )
 
     print()
     print(
-        "Si aquestes 10 imatges són correctes, "
-        "el següent pas serà l'avaluació completa del test."
+        f"CSV: {csv_path}"
     )
+
+    print(
+        f"Visualization: "
+        f"{figure_path}"
+    )
+
+    print(
+        f"Summary: "
+        f"{summary_path}"
+    )
+
+    print()
+    print("=" * 75)
+    print("DONE")
+    print("=" * 75)
 
 
 # ============================================================
-# MAIN
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
 
-    set_seed(SEED)
-
-    evaluate_10()
+    main()
