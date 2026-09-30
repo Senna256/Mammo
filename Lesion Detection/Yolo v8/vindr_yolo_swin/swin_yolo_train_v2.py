@@ -41,7 +41,7 @@ LOCAL_DATASET = Path(
 )
 
 OUTPUT_DIR = Path(
-    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/train_v2"
+    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/train_v2_4k"
 )
 
 MODEL_NAME = "swin_tiny_patch4_window7_224"
@@ -73,6 +73,8 @@ DETECT_STRIDES = (
 )
 
 SEED = 42
+
+TRAIN_MAX_IMAGES = 4000
 
 DEVICE = torch.device(
     "cuda"
@@ -681,6 +683,8 @@ class VindrSwinDataset(Dataset):
 
         self.records = []
 
+        self.is_positive = []
+
         missing_dicoms = 0
         missing_labels = 0
 
@@ -715,6 +719,10 @@ class VindrSwinDataset(Dataset):
                 missing_labels += 1
                 continue
 
+            has_box = self._label_has_boxes(
+                label_path
+            )
+
             self.records.append(
                 {
                     "study_id": study_id,
@@ -722,6 +730,10 @@ class VindrSwinDataset(Dataset):
                     "dicom_path": dicom_path,
                     "label_path": label_path,
                 }
+            )
+
+            self.is_positive.append(
+                has_box
             )
 
         print(
@@ -745,6 +757,27 @@ class VindrSwinDataset(Dataset):
         print(
             f"[{split}] Missing labels: "
             f"{missing_labels:,}",
+            flush=True,
+        )
+
+        num_positives = sum(
+            self.is_positive
+        )
+
+        num_negatives = (
+            len(self.is_positive)
+            - num_positives
+        )
+
+        print(
+            f"[{split}] Positive images: "
+            f"{num_positives:,}",
+            flush=True,
+        )
+
+        print(
+            f"[{split}] Negative images: "
+            f"{num_negatives:,}",
             flush=True,
         )
 
@@ -808,6 +841,23 @@ class VindrSwinDataset(Dataset):
             labels,
             dtype=np.float32,
         )
+
+    @staticmethod
+    def _label_has_boxes(
+        label_path,
+    ):
+
+        with open(
+            label_path,
+            "r",
+        ) as f:
+
+            for line in f:
+
+                if line.strip():
+                    return True
+
+        return False
 
     def __getitem__(
         self,
@@ -1030,6 +1080,156 @@ def collate_fn(batch):
         targets,
         paths,
     )
+
+
+def downsample_train_dataset(
+    dataset,
+    max_images,
+    seed=42,
+):
+
+    if max_images is None:
+        return
+
+    max_images = int(max_images)
+
+    if max_images <= 0:
+
+        raise ValueError(
+            "max_images must be > 0."
+        )
+
+    if (
+        not hasattr(dataset, "is_positive")
+        or
+        not hasattr(dataset, "records")
+    ):
+
+        raise RuntimeError(
+            "Dataset does not expose "
+            "required attributes."
+        )
+
+    num_samples = len(dataset.records)
+
+    if num_samples <= max_images:
+
+        print(
+            f"[train] Downsampling skipped: "
+            f"{num_samples:,} <= {max_images:,}."
+        )
+
+        return
+
+    if len(dataset.is_positive) != num_samples:
+
+        raise RuntimeError(
+            "Dataset positive flags and "
+            "dataset length do not match."
+        )
+
+    rng = random.Random(seed)
+
+    positive_indices = [
+        i
+        for i, flag in enumerate(
+            dataset.is_positive
+        )
+        if flag
+    ]
+
+    negative_indices = [
+        i
+        for i, flag in enumerate(
+            dataset.is_positive
+        )
+        if not flag
+    ]
+
+    num_positives = len(
+        positive_indices
+    )
+
+    num_negatives = len(
+        negative_indices
+    )
+
+    if num_positives == 0 or num_negatives == 0:
+
+        selected_indices = list(
+            range(num_samples)
+        )
+
+        rng.shuffle(selected_indices)
+
+        selected_indices = selected_indices[
+            :max_images
+        ]
+
+    elif num_positives < num_negatives:
+
+        keep_pos = positive_indices
+
+        keep_neg = rng.sample(
+            negative_indices,
+            k=max_images - num_positives,
+        )
+
+        selected_indices = (
+            keep_pos + keep_neg
+        )
+
+    else:
+
+        keep_neg = negative_indices
+
+        keep_pos = rng.sample(
+            positive_indices,
+            k=max_images - num_negatives,
+        )
+
+        selected_indices = (
+            keep_pos + keep_neg
+        )
+
+    rng.shuffle(selected_indices)
+
+    dataset.records = [
+        dataset.records[i]
+        for i in selected_indices
+    ]
+
+    dataset.is_positive = [
+        dataset.is_positive[i]
+        for i in selected_indices
+    ]
+
+    final_positives = sum(
+        dataset.is_positive
+    )
+
+    final_negatives = (
+        len(dataset.is_positive)
+        - final_positives
+    )
+
+    print(
+        f"[train] Downsampling applied: "
+        f"{num_samples:,} -> {len(dataset.records):,} images"
+    )
+
+    print(
+        f"[train] Final class mix: "
+        f"{final_positives:,} positives | "
+        f"{final_negatives:,} negatives"
+    )
+
+    if len(dataset.records) != max_images:
+
+        raise RuntimeError(
+            "Downsampling failed to produce "
+            "the requested number of images."
+        )
 
 
 # ============================================================
@@ -2142,6 +2342,17 @@ def run_training(
     print(
         f"[INIT] Val images: "
         f"{len(val_dataset):,}"
+    )
+
+    downsample_train_dataset(
+        train_dataset,
+        max_images=TRAIN_MAX_IMAGES,
+        seed=SEED,
+    )
+
+    print(
+        f"[INIT] Train images after downsampling: "
+        f"{len(train_dataset):,}"
     )
 
     print()

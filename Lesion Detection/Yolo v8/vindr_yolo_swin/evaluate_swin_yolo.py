@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import cv2
+import matplotlib
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -18,6 +19,9 @@ from swin_yolo_train_v2 import (
     SwinYOLO,
     collate_fn,
 )
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 # ============================================================
@@ -72,6 +76,17 @@ IOU_THRESHOLDS = np.arange(
     0.1,
     0.96,
     0.05,
+)
+
+CURVE_IOU = 0.50
+
+FROC_FPPI_POINTS = (
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    4.0,
+    8.0,
 )
 
 DEVICE = torch.device(
@@ -859,6 +874,420 @@ def collect_ap_statistics(
         final_fp,
         final_fn,
     )
+
+
+# ============================================================
+# CURVES (PR / FROC / TPR-vs-IoU)
+# ============================================================
+
+def build_prediction_records(
+    predictions,
+):
+
+    prediction_records = []
+
+    for image_id, preds in predictions.items():
+
+        for prediction in preds:
+
+            if len(prediction) < 5:
+                continue
+
+            prediction_records.append(
+                (
+                    image_id,
+                    float(prediction[4]),
+                    prediction[:4],
+                )
+            )
+
+    prediction_records.sort(
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    return prediction_records
+
+
+def match_predictions(
+    prediction_records,
+    ground_truths,
+    iou_threshold,
+):
+
+    matched = {
+        image_id: set()
+        for image_id in ground_truths
+    }
+
+    tp_values = []
+    fp_values = []
+    confidences = []
+
+    for (
+        image_id,
+        confidence,
+        pred_box,
+    ) in prediction_records:
+
+        gts = ground_truths.get(
+            image_id,
+            np.zeros(
+                (0, 4),
+                dtype=np.float32,
+            ),
+        )
+
+        confidences.append(confidence)
+
+        if len(gts) == 0:
+
+            tp_values.append(0)
+            fp_values.append(1)
+            continue
+
+        ious = box_iou(
+            np.asarray(
+                [pred_box],
+                dtype=np.float32,
+            ),
+            gts,
+        )[0]
+
+        order = np.argsort(
+            -ious
+        )
+
+        found_match = False
+
+        for gt_index in order:
+
+            gt_index = int(gt_index)
+
+            if gt_index in matched[image_id]:
+                continue
+
+            if ious[gt_index] >= iou_threshold:
+
+                matched[image_id].add(
+                    gt_index
+                )
+
+                found_match = True
+                break
+
+        if found_match:
+
+            tp_values.append(1)
+            fp_values.append(0)
+
+        else:
+
+            tp_values.append(0)
+            fp_values.append(1)
+
+    return (
+        np.asarray(
+            tp_values,
+            dtype=np.float64,
+        ),
+        np.asarray(
+            fp_values,
+            dtype=np.float64,
+        ),
+        np.asarray(
+            confidences,
+            dtype=np.float64,
+        ),
+    )
+
+
+def compute_pr_and_froc_curves(
+    predictions,
+    ground_truths,
+    iou_threshold,
+):
+
+    total_gt = int(
+        sum(
+            len(gts)
+            for gts in ground_truths.values()
+        )
+    )
+
+    num_images = int(
+        len(predictions)
+    )
+
+    prediction_records = build_prediction_records(
+        predictions
+    )
+
+    if (
+        total_gt == 0
+        or len(prediction_records) == 0
+        or num_images == 0
+    ):
+
+        return {
+            "recall": np.array(
+                [0.0],
+                dtype=np.float64,
+            ),
+            "precision": np.array(
+                [1.0],
+                dtype=np.float64,
+            ),
+            "fpi": np.array(
+                [0.0],
+                dtype=np.float64,
+            ),
+            "sensitivity": np.array(
+                [0.0],
+                dtype=np.float64,
+            ),
+            "conf_thresholds": np.array(
+                [],
+                dtype=np.float64,
+            ),
+            "ap": 0.0,
+            "froc_points": {
+                str(fppi): 0.0
+                for fppi in FROC_FPPI_POINTS
+            },
+        }
+
+    tp_values, fp_values, confidences = (
+        match_predictions(
+            prediction_records,
+            ground_truths,
+            iou_threshold,
+        )
+    )
+
+    cumulative_tp = np.cumsum(
+        tp_values
+    )
+
+    cumulative_fp = np.cumsum(
+        fp_values
+    )
+
+    recall = (
+        cumulative_tp
+        / max(total_gt, 1)
+    )
+
+    precision = (
+        cumulative_tp
+        /
+        np.maximum(
+            cumulative_tp
+            + cumulative_fp,
+            1e-12,
+        )
+    )
+
+    ap = compute_ap(
+        recall,
+        precision,
+    )
+
+    sensitivity = recall.copy()
+
+    fpi = (
+        cumulative_fp
+        / max(num_images, 1)
+    )
+
+    # Include origin so the curve starts at (0, 0).
+    fpi_curve = np.concatenate(
+        [
+            np.array(
+                [0.0],
+                dtype=np.float64,
+            ),
+            fpi,
+        ]
+    )
+
+    sensitivity_curve = np.concatenate(
+        [
+            np.array(
+                [0.0],
+                dtype=np.float64,
+            ),
+            sensitivity,
+        ]
+    )
+
+    froc_points = {}
+
+    for target_fppi in FROC_FPPI_POINTS:
+
+        valid = (
+            fpi_curve
+            <= target_fppi
+        )
+
+        if np.any(valid):
+
+            sens_value = float(
+                np.max(
+                    sensitivity_curve[valid]
+                )
+            )
+
+        else:
+
+            sens_value = 0.0
+
+        froc_points[
+            str(target_fppi)
+        ] = sens_value
+
+    return {
+        "recall": recall,
+        "precision": precision,
+        "fpi": fpi_curve,
+        "sensitivity": sensitivity_curve,
+        "conf_thresholds": confidences,
+        "ap": float(ap),
+        "froc_points": froc_points,
+    }
+
+
+def save_curve_csv(
+    path,
+    headers,
+    rows,
+):
+
+    with open(
+        path,
+        "w",
+        newline="",
+    ) as f:
+
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+
+def save_pr_curve_plot(
+    path,
+    recall,
+    precision,
+    ap,
+    iou_threshold,
+):
+
+    plt.figure(
+        figsize=(8, 6)
+    )
+
+    plt.plot(
+        recall,
+        precision,
+        linewidth=2,
+        label=(
+            f"AP@IoU={iou_threshold:.2f}"
+            f" = {ap:.4f}"
+        ),
+    )
+
+    plt.xlim(0.0, 1.0)
+    plt.ylim(0.0, 1.0)
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title("Precision-Recall Curve")
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="lower left")
+    plt.tight_layout()
+    plt.savefig(path, dpi=200)
+    plt.close()
+
+
+def save_froc_curve_plot(
+    path,
+    fpi,
+    sensitivity,
+    sampled_points,
+    iou_threshold,
+):
+
+    plt.figure(
+        figsize=(8, 6)
+    )
+
+    plt.plot(
+        fpi,
+        sensitivity,
+        linewidth=2,
+        label=f"IoU={iou_threshold:.2f}",
+    )
+
+    sampled_x = [
+        float(x)
+        for x in sampled_points.keys()
+    ]
+
+    sampled_y = [
+        float(y)
+        for y in sampled_points.values()
+    ]
+
+    plt.scatter(
+        sampled_x,
+        sampled_y,
+        s=40,
+        zorder=3,
+        label="Standard FPI points",
+    )
+
+    plt.xscale("log")
+    plt.xlim(0.2, 10.0)
+    plt.ylim(0.0, 1.0)
+    plt.xlabel("False Positives Per Image (FPI)")
+    plt.ylabel("Sensitivity (TPR)")
+    plt.title("FROC Curve")
+    plt.grid(True, which="both", alpha=0.3)
+    plt.legend(loc="lower right")
+    plt.tight_layout()
+    plt.savefig(path, dpi=200)
+    plt.close()
+
+
+def save_tpr_iou_curve_plot(
+    path,
+    iou_thresholds,
+    tpr_values,
+):
+
+    plt.figure(
+        figsize=(8, 6)
+    )
+
+    plt.plot(
+        iou_thresholds,
+        tpr_values,
+        marker="o",
+        linewidth=2,
+    )
+
+    plt.xlim(
+        float(np.min(iou_thresholds)),
+        float(np.max(iou_thresholds)),
+    )
+
+    plt.ylim(0.0, 1.0)
+    plt.xlabel("IoU Threshold")
+    plt.ylabel("TPR")
+    plt.title("TPR vs IoU Threshold")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(path, dpi=200)
+    plt.close()
 
 
 # ============================================================
@@ -1652,6 +2081,148 @@ def main():
     )
 
     # ========================================================
+    # CURVES
+    # ========================================================
+
+    print(
+        "[EVAL] Building PR/FROC curves..."
+    )
+
+    curves = compute_pr_and_froc_curves(
+        predictions,
+        ground_truths,
+        CURVE_IOU,
+    )
+
+    metrics[
+        "curve_iou"
+    ] = float(
+        CURVE_IOU
+    )
+
+    metrics[
+        "pr_ap"
+    ] = float(
+        curves["ap"]
+    )
+
+    metrics[
+        "froc_sensitivity_at_fpi"
+    ] = {
+        key: float(value)
+        for key, value in curves[
+            "froc_points"
+        ].items()
+    }
+
+    pr_curve_png = (
+        OUTPUT_DIR
+        / "pr_curve.png"
+    )
+
+    pr_curve_csv = (
+        OUTPUT_DIR
+        / "pr_curve.csv"
+    )
+
+    froc_curve_png = (
+        OUTPUT_DIR
+        / "froc_curve.png"
+    )
+
+    froc_curve_csv = (
+        OUTPUT_DIR
+        / "froc_curve.csv"
+    )
+
+    tpr_iou_curve_png = (
+        OUTPUT_DIR
+        / "tpr_vs_iou_curve.png"
+    )
+
+    tpr_iou_curve_csv = (
+        OUTPUT_DIR
+        / "tpr_vs_iou_curve.csv"
+    )
+
+    save_pr_curve_plot(
+        pr_curve_png,
+        curves["recall"],
+        curves["precision"],
+        curves["ap"],
+        CURVE_IOU,
+    )
+
+    save_froc_curve_plot(
+        froc_curve_png,
+        curves["fpi"],
+        curves["sensitivity"],
+        curves[
+            "froc_points"
+        ],
+        CURVE_IOU,
+    )
+
+    tpr_vs_iou_x = np.asarray(
+        IOU_THRESHOLDS,
+        dtype=np.float64,
+    )
+
+    tpr_vs_iou_y = np.asarray(
+        [
+            iou_statistics[
+                f"{threshold:.2f}"
+            ]["TPR"]
+            for threshold in IOU_THRESHOLDS
+        ],
+        dtype=np.float64,
+    )
+
+    save_tpr_iou_curve_plot(
+        tpr_iou_curve_png,
+        tpr_vs_iou_x,
+        tpr_vs_iou_y,
+    )
+
+    save_curve_csv(
+        pr_curve_csv,
+        [
+            "recall",
+            "precision",
+        ],
+        zip(
+            curves["recall"],
+            curves["precision"],
+        ),
+    )
+
+    save_curve_csv(
+        froc_curve_csv,
+        [
+            "fpi",
+            "sensitivity",
+        ],
+        zip(
+            curves["fpi"],
+            curves[
+                "sensitivity"
+            ],
+        ),
+    )
+
+    save_curve_csv(
+        tpr_iou_curve_csv,
+        [
+            "iou_threshold",
+            "tpr",
+        ],
+        zip(
+            tpr_vs_iou_x,
+            tpr_vs_iou_y,
+        ),
+    )
+
+    # ========================================================
     # PRINT RESULTS
     # ========================================================
 
@@ -1954,6 +2525,21 @@ def main():
     print(
         f"[SAVE] Visualizations generated: "
         f"{visualization_count}"
+    )
+
+    print(
+        f"[SAVE] PR curve: "
+        f"{pr_curve_png}"
+    )
+
+    print(
+        f"[SAVE] FROC curve: "
+        f"{froc_curve_png}"
+    )
+
+    print(
+        f"[SAVE] TPR vs IoU curve: "
+        f"{tpr_iou_curve_png}"
     )
 
     print(
