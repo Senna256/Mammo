@@ -26,6 +26,8 @@ from ultralytics.utils.loss import v8DetectionLoss
 # CONFIGURATION
 # ============================================================
 
+# Centralized project paths, model settings, and training hyperparameters.
+
 NETWORK_IMAGES = Path(
     "/home/enric/Datasets/Original/vindr/images"
 )
@@ -83,6 +85,7 @@ DEVICE = torch.device(
 # REPRODUCIBILITY
 # ============================================================
 
+# Seed all relevant RNGs to make experiments as repeatable as possible.
 def set_seed(seed=42):
 
     random.seed(seed)
@@ -98,6 +101,8 @@ def set_seed(seed=42):
 # ============================================================
 # BREAST ROI
 # ============================================================
+
+# Find the breast region and return a robust bounding box for cropping.
 
 def detect_breast_roi(image):
 
@@ -172,6 +177,8 @@ def detect_breast_roi(image):
 # DICOM PREPROCESSING
 # ============================================================
 
+# Read a DICOM mammogram and apply windowing to produce an 8-bit image.
+
 def preprocess_dicom(dicom_path):
 
     from mammo_prep.windowing import preprocess_window
@@ -208,6 +215,8 @@ def preprocess_dicom(dicom_path):
 # ============================================================
 # RESIZE
 # ============================================================
+
+# Helpers to resize while keeping aspect ratio and to pad into a fixed square.
 
 def resize_keep_aspect(
     image,
@@ -301,6 +310,8 @@ def resize_and_pad(
 # ============================================================
 # BOX TRANSFORMATION
 # ============================================================
+
+# Convert YOLO boxes across coordinate spaces (full image -> ROI -> padded image).
 
 def transform_boxes_to_roi(
     labels,
@@ -530,6 +541,8 @@ def transform_boxes_to_padded_image(
 # ============================================================
 # DATASET
 # ============================================================
+
+# Dataset that builds valid DICOM/label pairs and applies full preprocessing.
 
 class VindrSwinDataset(Dataset):
 
@@ -922,6 +935,8 @@ class VindrSwinDataset(Dataset):
 # COLLATE
 # ============================================================
 
+# Merge variable-length box annotations into a YOLO-compatible batch dict.
+
 def collate_fn(batch):
 
     images = []
@@ -1021,6 +1036,8 @@ def collate_fn(batch):
 # SWIN + YOLOv8
 # ============================================================
 
+# Model that uses Swin features and feeds them into a YOLOv8 Detect head.
+
 class SwinYOLO(nn.Module):
 
     def __init__(
@@ -1103,6 +1120,8 @@ class SwinYOLO(nn.Module):
 # ULTRALYTICS LOSS WRAPPER
 # ============================================================
 
+# Minimal adapter so Ultralytics v8DetectionLoss can consume this custom model.
+
 class DetectionLossModel(
     nn.Module
 ):
@@ -1141,6 +1160,8 @@ def create_loss(model):
 # ============================================================
 # LOSS HANDLING
 # ============================================================
+
+# Normalize the returned loss structure into a single scalar for backprop.
 
 def compute_loss(
     criterion,
@@ -1184,6 +1205,8 @@ def compute_loss(
 # ============================================================
 # CHECKPOINT
 # ============================================================
+
+# Save and restore model/optimizer/scheduler/scaler state for resume training.
 
 def save_checkpoint(
     path,
@@ -1285,6 +1308,8 @@ def load_checkpoint(
 # OUTPUT INSPECTION
 # ============================================================
 
+# Debug utility to recursively print prediction structure and tensor shapes.
+
 def inspect_prediction(
     obj,
     prefix="",
@@ -1361,6 +1386,8 @@ def inspect_prediction(
 # ============================================================
 # TEST
 # ============================================================
+
+# End-to-end smoke test: data -> model -> loss -> backward with gradient checks.
 
 def run_test():
 
@@ -1692,6 +1719,8 @@ def run_test():
 # TRAIN ONE EPOCH
 # ============================================================
 
+# One training epoch with AMP, gradient accumulation, and gradient clipping.
+
 def train_one_epoch(
     model,
     criterion,
@@ -1824,6 +1853,8 @@ def train_one_epoch(
 # VALIDATION
 # ============================================================
 
+# Validation pass that computes mean detection loss without gradient updates.
+
 @torch.no_grad()
 def validate(
     model,
@@ -1915,6 +1946,8 @@ def validate(
 # ============================================================
 # FULL TRAINING
 # ============================================================
+
+# Full training loop orchestration: loaders, model, optimization, checkpoints.
 
 def run_training(
     resume=None,
@@ -2537,6 +2570,8 @@ def run_training(
 # ARGUMENTS
 # ============================================================
 
+# CLI options to run a quick test, train from scratch, or resume from checkpoint.
+
 def parse_args():
 
     parser = argparse.ArgumentParser(
@@ -2608,6 +2643,8 @@ def parse_args():
 # ============================================================
 # MAIN
 # ============================================================
+
+# Entry point that dispatches execution mode based on CLI arguments.
 
 def main():
 
