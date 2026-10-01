@@ -26,26 +26,14 @@ from ultralytics.utils.loss import v8DetectionLoss
 # CONFIGURATION
 # ============================================================
 
-NETWORK_IMAGES = Path(
-    "/home/enric/Datasets/Original/vindr/images"
-)
-
-ANNOTATIONS_CSV = Path(
-    "/home/enric/Datasets/Original/vindr/finding_annotations.csv"
-)
-
-LOCAL_DATASET = Path(
-    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo"
-)
-
-OUTPUT_DIR = Path(
-    "/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_vit/train_4k/outputs"
-)
+NETWORK_IMAGES = Path("/home/enric/Datasets/Original/vindr/images")
+ANNOTATIONS_CSV = Path("/home/enric/Datasets/Original/vindr/finding_annotations.csv")
+LOCAL_DATASET = Path("/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo")
+OUTPUT_DIR = Path("/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_vit/train_v2_4k")
 
 MODEL_NAME = "vit_base_patch16_224"
 
 NUM_CLASSES = 1
-
 IMG_SIZE = 1024
 
 BATCH_SIZE = 8
@@ -57,66 +45,16 @@ LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
 
 NUM_WORKERS = 16
-
 SEED = 42
 
 TRAIN_MAX_IMAGES = 4000
 
-DEVICE = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
-)
-
-
-# ============================================================
-# ViT CONFIGURATION
-# ============================================================
-
-# ViT-Base:
-#
-# 1024 / 16 = 64
-#
-# Therefore the ViT patch representation is:
-#
-# [B, 768, 64, 64]
-#
-# We extract intermediate transformer blocks and construct
-# three YOLO-compatible feature levels:
-#
-# P3 -> 128 x 128 -> stride 8
-# P4 ->  64 x  64 -> stride 16
-# P5 ->  32 x  32 -> stride 32
-#
-# The channels are adapted before entering YOLO Detect.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 VIT_EMBED_DIM = 768
-
-VIT_FEATURE_CHANNELS = (
-    256,
-    512,
-    768,
-)
-
-DETECT_STRIDES = (
-    8.0,
-    16.0,
-    32.0,
-)
-
-# Intermediate ViT blocks.
-#
-# ViT-Base has 12 transformer blocks:
-#
-# block 0 ... block 11
-#
-# We take three representations from different depths.
-#
-VIT_BLOCKS = (
-    3,
-    7,
-    11,
-)
+VIT_FEATURE_CHANNELS = (256, 512, 768)
+DETECT_STRIDES = (8.0, 16.0, 32.0)
+VIT_BLOCKS = (3, 7, 11)
 
 
 # ============================================================
@@ -124,15 +62,11 @@ VIT_BLOCKS = (
 # ============================================================
 
 def set_seed(seed=42):
-
     random.seed(seed)
-
     np.random.seed(seed)
-
     torch.manual_seed(seed)
 
     if torch.cuda.is_available():
-
         torch.cuda.manual_seed_all(seed)
 
     torch.backends.cudnn.benchmark = True
@@ -143,38 +77,17 @@ def set_seed(seed=42):
 # ============================================================
 
 def detect_breast_roi(image):
-
     if image.ndim != 2:
-
-        raise ValueError(
-            f"Expected grayscale image, got {image.shape}"
-        )
+        raise ValueError(f"Expected grayscale image, got {image.shape}")
 
     h, w = image.shape
 
-    _, thresh = cv2.threshold(
-        image,
-        5,
-        255,
-        cv2.THRESH_BINARY,
-    )
+    _, thresh = cv2.threshold(image, 5, 255, cv2.THRESH_BINARY)
 
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (31, 31),
-    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
 
-    thresh = cv2.morphologyEx(
-        thresh,
-        cv2.MORPH_CLOSE,
-        kernel,
-    )
-
-    thresh = cv2.morphologyEx(
-        thresh,
-        cv2.MORPH_OPEN,
-        kernel,
-    )
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
     contours, _ = cv2.findContours(
         thresh,
@@ -183,92 +96,41 @@ def detect_breast_roi(image):
     )
 
     if not contours:
-
         return 0, 0, w, h
 
-    contour = max(
-        contours,
-        key=cv2.contourArea,
-    )
+    contour = max(contours, key=cv2.contourArea)
 
-    x, y, bw, bh = cv2.boundingRect(
-        contour
-    )
+    x, y, bw, bh = cv2.boundingRect(contour)
 
-    if (
-        bw < 0.05 * w
-        or bh < 0.05 * h
-    ):
-
+    if bw < 0.05 * w or bh < 0.05 * h:
         return 0, 0, w, h
 
-    x1 = max(
-        0,
-        x,
-    )
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(w, x + bw)
+    y2 = min(h, y + bh)
 
-    y1 = max(
-        0,
-        y,
-    )
-
-    x2 = min(
-        w,
-        x + bw,
-    )
-
-    y2 = min(
-        h,
-        y + bh,
-    )
-
-    if (
-        x2 <= x1
-        or y2 <= y1
-    ):
-
+    if x2 <= x1 or y2 <= y1:
         return 0, 0, w, h
 
-    return (
-        x1,
-        y1,
-        x2,
-        y2,
-    )
+    return x1, y1, x2, y2
 
 
 # ============================================================
 # DICOM PREPROCESSING
 # ============================================================
 
-def preprocess_dicom(
-    dicom_path,
-):
+def preprocess_dicom(dicom_path):
+    from mammo_prep.windowing import preprocess_window
 
-    from mammo_prep.windowing import (
-        preprocess_window,
-    )
+    ds = pydicom.dcmread(str(dicom_path))
 
-    ds = pydicom.dcmread(
-        str(dicom_path)
-    )
+    image = ds.pixel_array.astype(np.float32)
 
-    image = ds.pixel_array.astype(
-        np.float32
-    )
-
-    photometric = getattr(
-        ds,
-        "PhotometricInterpretation",
-        "",
-    )
+    photometric = getattr(ds, "PhotometricInterpretation", "")
 
     if photometric == "MONOCHROME1":
-
-        image = (
-            image.max()
-            - image
-        )
+        image = image.max() - image
 
     image = preprocess_window(
         image,
@@ -286,11 +148,7 @@ def preprocess_dicom(
 # RESIZE
 # ============================================================
 
-def resize_keep_aspect(
-    image,
-    max_size,
-):
-
+def resize_keep_aspect(image, max_size):
     h, w = image.shape[:2]
 
     scale = min(
@@ -298,36 +156,19 @@ def resize_keep_aspect(
         max_size / float(h),
     )
 
-    new_w = max(
-        1,
-        int(round(w * scale)),
-    )
-
-    new_h = max(
-        1,
-        int(round(h * scale)),
-    )
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
 
     resized = cv2.resize(
         image,
-        (
-            new_w,
-            new_h,
-        ),
+        (new_w, new_h),
         interpolation=cv2.INTER_LINEAR,
     )
 
-    return (
-        resized,
-        scale,
-    )
+    return resized, scale
 
 
-def resize_and_pad(
-    image,
-    img_size,
-):
-
+def resize_and_pad(image, img_size):
     h, w = image.shape[:2]
 
     scale = min(
@@ -335,55 +176,29 @@ def resize_and_pad(
         img_size / float(h),
     )
 
-    new_w = max(
-        1,
-        int(round(w * scale)),
-    )
-
-    new_h = max(
-        1,
-        int(round(h * scale)),
-    )
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
 
     resized = cv2.resize(
         image,
-        (
-            new_w,
-            new_h,
-        ),
+        (new_w, new_h),
         interpolation=cv2.INTER_LINEAR,
     )
 
     canvas = np.zeros(
-        (
-            img_size,
-            img_size,
-            3,
-        ),
+        (img_size, img_size, 3),
         dtype=np.uint8,
     )
 
-    pad_x = (
-        img_size
-        - new_w
-    ) // 2
-
-    pad_y = (
-        img_size
-        - new_h
-    ) // 2
+    pad_x = (img_size - new_w) // 2
+    pad_y = (img_size - new_h) // 2
 
     canvas[
         pad_y:pad_y + new_h,
         pad_x:pad_x + new_w,
     ] = resized
 
-    return (
-        canvas,
-        scale,
-        pad_x,
-        pad_y,
-    )
+    return canvas, scale, pad_x, pad_y
 
 
 # ============================================================
@@ -399,144 +214,55 @@ def transform_boxes_to_roi(
     roi_x2,
     roi_y2,
 ):
-
-    roi_w = (
-        roi_x2
-        - roi_x1
-    )
-
-    roi_h = (
-        roi_y2
-        - roi_y1
-    )
+    roi_w = roi_x2 - roi_x1
+    roi_h = roi_y2 - roi_y1
 
     transformed = []
 
     for label in labels:
-
         cls_id, cx, cy, bw, bh = label
 
-        x_center = (
-            cx
-            * original_width
-        )
+        x_center = cx * original_width
+        y_center = cy * original_height
+        box_w = bw * original_width
+        box_h = bh * original_height
 
-        y_center = (
-            cy
-            * original_height
-        )
-
-        box_w = (
-            bw
-            * original_width
-        )
-
-        box_h = (
-            bh
-            * original_height
-        )
-
-        x_min = (
-            x_center
-            - box_w / 2.0
-        )
-
-        y_min = (
-            y_center
-            - box_h / 2.0
-        )
-
-        x_max = (
-            x_center
-            + box_w / 2.0
-        )
-
-        y_max = (
-            y_center
-            + box_h / 2.0
-        )
+        x_min = x_center - box_w / 2.0
+        y_min = y_center - box_h / 2.0
+        x_max = x_center + box_w / 2.0
+        y_max = y_center + box_h / 2.0
 
         x_min -= roi_x1
         x_max -= roi_x1
-
         y_min -= roi_y1
         y_max -= roi_y1
 
-        x_min = np.clip(
-            x_min,
-            0,
-            roi_w,
-        )
+        x_min = np.clip(x_min, 0, roi_w)
+        x_max = np.clip(x_max, 0, roi_w)
+        y_min = np.clip(y_min, 0, roi_h)
+        y_max = np.clip(y_max, 0, roi_h)
 
-        x_max = np.clip(
-            x_max,
-            0,
-            roi_w,
-        )
+        new_w = x_max - x_min
+        new_h = y_max - y_min
 
-        y_min = np.clip(
-            y_min,
-            0,
-            roi_h,
-        )
-
-        y_max = np.clip(
-            y_max,
-            0,
-            roi_h,
-        )
-
-        new_w = (
-            x_max
-            - x_min
-        )
-
-        new_h = (
-            y_max
-            - y_min
-        )
-
-        if (
-            new_w <= 1
-            or new_h <= 1
-        ):
-
+        if new_w <= 1 or new_h <= 1:
             continue
 
-        new_cx = (
-            x_min
-            + x_max
-        ) / 2.0
+        new_cx = (x_min + x_max) / 2.0
+        new_cy = (y_min + y_max) / 2.0
 
-        new_cy = (
-            y_min
-            + y_max
-        ) / 2.0
-
-        transformed.append(
-            [
-                cls_id,
-                new_cx / roi_w,
-                new_cy / roi_h,
-                new_w / roi_w,
-                new_h / roi_h,
-            ]
-        )
+        transformed.append([
+            cls_id,
+            new_cx / roi_w,
+            new_cy / roi_h,
+            new_w / roi_w,
+            new_h / roi_h,
+        ])
 
     if not transformed:
+        return np.zeros((0, 5), dtype=np.float32)
 
-        return np.zeros(
-            (
-                0,
-                5,
-            ),
-            dtype=np.float32,
-        )
-
-    return np.asarray(
-        transformed,
-        dtype=np.float32,
-    )
+    return np.asarray(transformed, dtype=np.float32)
 
 
 def transform_boxes_to_padded_image(
@@ -548,122 +274,55 @@ def transform_boxes_to_padded_image(
     pad_y,
     img_size,
 ):
-
     transformed = []
 
     for label in labels:
-
         cls_id, cx, cy, bw, bh = label
 
-        x_center = (
-            cx
-            * crop_width
-        )
+        x_center = cx * crop_width
+        y_center = cy * crop_height
 
-        y_center = (
-            cy
-            * crop_height
-        )
+        box_w = bw * crop_width
+        box_h = bh * crop_height
 
-        box_w = (
-            bw
-            * crop_width
-        )
-
-        box_h = (
-            bh
-            * crop_height
-        )
-
-        x_center = (
-            x_center
-            * scale
-            + pad_x
-        )
-
-        y_center = (
-            y_center
-            * scale
-            + pad_y
-        )
+        x_center = x_center * scale + pad_x
+        y_center = y_center * scale + pad_y
 
         box_w *= scale
-
         box_h *= scale
 
         x_center /= img_size
-
         y_center /= img_size
-
         box_w /= img_size
-
         box_h /= img_size
 
-        x_center = np.clip(
-            x_center,
-            0.0,
-            1.0,
-        )
+        x_center = np.clip(x_center, 0.0, 1.0)
+        y_center = np.clip(y_center, 0.0, 1.0)
+        box_w = np.clip(box_w, 0.0, 1.0)
+        box_h = np.clip(box_h, 0.0, 1.0)
 
-        y_center = np.clip(
-            y_center,
-            0.0,
-            1.0,
-        )
-
-        box_w = np.clip(
-            box_w,
-            0.0,
-            1.0,
-        )
-
-        box_h = np.clip(
-            box_h,
-            0.0,
-            1.0,
-        )
-
-        if (
-            box_w <= 0
-            or box_h <= 0
-        ):
-
+        if box_w <= 0 or box_h <= 0:
             continue
 
-        transformed.append(
-            [
-                cls_id,
-                x_center,
-                y_center,
-                box_w,
-                box_h,
-            ]
-        )
+        transformed.append([
+            cls_id,
+            x_center,
+            y_center,
+            box_w,
+            box_h,
+        ])
 
     if not transformed:
+        return np.zeros((0, 5), dtype=np.float32)
 
-        return np.zeros(
-            (
-                0,
-                5,
-            ),
-            dtype=np.float32,
-        )
-
-    return np.asarray(
-        transformed,
-        dtype=np.float32,
-    )
+    return np.asarray(transformed, dtype=np.float32)
 
 
 # ============================================================
 # DATASET
 # ============================================================
 
-class VindrViTDataset(
-    Dataset
-):
-
+class VindrViTDataset(Dataset):
     def __init__(
         self,
         network_images,
@@ -672,58 +331,32 @@ class VindrViTDataset(
         split,
         img_size=1024,
     ):
-
-        self.network_images = Path(
-            network_images
-        )
-
-        self.annotations_csv = Path(
-            annotations_csv
-        )
-
-        self.local_dataset = Path(
-            local_dataset
-        )
-
+        self.network_images = Path(network_images)
+        self.annotations_csv = Path(annotations_csv)
+        self.local_dataset = Path(local_dataset)
         self.split = split
-
         self.img_size = img_size
 
-        self.label_dir = (
-            self.local_dataset
-            / "labels"
-            / split
-        )
+        self.label_dir = self.local_dataset / "labels" / split
 
         if not self.annotations_csv.exists():
-
             raise FileNotFoundError(
-                "Annotations CSV not found: "
-                f"{self.annotations_csv}"
+                f"Annotations CSV not found: {self.annotations_csv}"
             )
 
         if not self.network_images.exists():
-
             raise FileNotFoundError(
-                "Network image directory not found: "
-                f"{self.network_images}"
+                f"Network image directory not found: {self.network_images}"
             )
 
         if not self.label_dir.exists():
-
             raise FileNotFoundError(
-                "Label directory not found: "
-                f"{self.label_dir}"
+                f"Label directory not found: {self.label_dir}"
             )
 
-        print(
-            f"[{split}] Reading annotations CSV...",
-            flush=True,
-        )
+        print(f"[{split}] Reading annotations CSV...", flush=True)
 
-        df = pd.read_csv(
-            self.annotations_csv
-        )
+        df = pd.read_csv(self.annotations_csv)
 
         required_columns = [
             "study_id",
@@ -738,79 +371,52 @@ class VindrViTDataset(
         ]
 
         if missing:
-
             raise RuntimeError(
                 f"Missing columns in CSV: {missing}"
             )
 
         if split == "train":
-
             csv_split = "training"
-
         elif split == "val":
-
             csv_split = "training"
-
         elif split == "test":
-
             csv_split = "test"
-
         else:
-
-            raise ValueError(
-                f"Unknown dataset split: {split}"
-            )
+            raise ValueError(f"Unknown dataset split: {split}")
 
         df = df[
-            df["split"].astype(str)
-            == csv_split
+            df["split"].astype(str) == csv_split
         ].copy()
 
         label_ids = {
             p.stem
-            for p in self.label_dir.glob(
-                "*.txt"
-            )
+            for p in self.label_dir.glob("*.txt")
         }
 
         df = df[
-            df["image_id"].astype(str)
-            .isin(label_ids)
+            df["image_id"].astype(str).isin(label_ids)
         ].copy()
 
         if split == "val":
-
             val_ids = {
                 p.stem
-                for p in self.label_dir.glob(
-                    "*.txt"
-                )
+                for p in self.label_dir.glob("*.txt")
             }
 
             df = df[
-                df["image_id"].astype(str)
-                .isin(val_ids)
+                df["image_id"].astype(str).isin(val_ids)
             ].copy()
 
-        df = df.drop_duplicates(
-            subset=["image_id"]
-        )
+        df = df.drop_duplicates(subset=["image_id"])
 
         self.records = []
 
         missing_dicoms = 0
-
         missing_labels = 0
 
         for _, row in df.iterrows():
-
-            study_id = str(
-                row["study_id"]
-            )
-
-            image_id = str(
-                row["image_id"]
-            )
+            study_id = str(row["study_id"])
+            image_id = str(row["image_id"])
 
             dicom_path = (
                 self.network_images
@@ -824,87 +430,56 @@ class VindrViTDataset(
             )
 
             if not dicom_path.exists():
-
                 missing_dicoms += 1
-
                 continue
 
             if not label_path.exists():
-
                 missing_labels += 1
-
                 continue
 
-            self.records.append(
-                {
-                    "study_id": study_id,
-                    "image_id": image_id,
-                    "dicom_path": dicom_path,
-                    "label_path": label_path,
-                }
-            )
+            self.records.append({
+                "study_id": study_id,
+                "image_id": image_id,
+                "dicom_path": dicom_path,
+                "label_path": label_path,
+            })
 
         print(
-            f"[{split}] CSV rows after split/filter: "
-            f"{len(df):,}",
+            f"[{split}] CSV rows after split/filter: {len(df):,}",
             flush=True,
         )
 
         print(
-            f"[{split}] Valid image-label pairs: "
-            f"{len(self.records):,}",
+            f"[{split}] Valid image-label pairs: {len(self.records):,}",
             flush=True,
         )
 
         print(
-            f"[{split}] Missing DICOMs: "
-            f"{missing_dicoms:,}",
+            f"[{split}] Missing DICOMs: {missing_dicoms:,}",
             flush=True,
         )
 
         print(
-            f"[{split}] Missing labels: "
-            f"{missing_labels:,}",
+            f"[{split}] Missing labels: {missing_labels:,}",
             flush=True,
         )
 
         if not self.records:
-
             raise RuntimeError(
-                f"No valid samples found for split "
-                f"'{split}'."
+                f"No valid samples found for split '{split}'."
             )
 
     def __len__(self):
+        return len(self.records)
 
-        return len(
-            self.records
-        )
-
-    def _load_labels(
-        self,
-        label_path,
-    ):
-
+    def _load_labels(self, label_path):
         if not label_path.exists():
-
-            return np.zeros(
-                (
-                    0,
-                    5,
-                ),
-                dtype=np.float32,
-            )
+            return np.zeros((0, 5), dtype=np.float32)
 
         labels = []
 
-        with open(
-            label_path,
-            "r",
-        ) as f:
-
+        with open(label_path, "r") as f:
             for line in f:
-
                 line = line.strip()
 
                 if not line:
@@ -915,87 +490,54 @@ class VindrViTDataset(
                 if len(values) != 5:
                     continue
 
-                labels.append(
-                    [
+                try:
+                    labels.append([
                         float(v)
                         for v in values
-                    ]
-                )
+                    ])
+                except ValueError:
+                    continue
 
         if not labels:
+            return np.zeros((0, 5), dtype=np.float32)
 
-            return np.zeros(
-                (
-                    0,
-                    5,
-                ),
-                dtype=np.float32,
-            )
+        return np.asarray(labels, dtype=np.float32)
 
-        return np.asarray(
-            labels,
-            dtype=np.float32,
-        )
+    def _label_has_boxes(self, label_path):
+        labels = self._load_labels(label_path)
+        return labels.shape[0] > 0
 
-    def __getitem__(
-        self,
-        index,
-    ):
-
+    def __getitem__(self, index):
         record = self.records[index]
 
-        image_path = record[
-            "dicom_path"
-        ]
+        image_path = record["dicom_path"]
+        label_path = record["label_path"]
 
-        label_path = record[
-            "label_path"
-        ]
+        image = preprocess_dicom(image_path)
 
-        image = preprocess_dicom(
-            image_path
+        labels = self._load_labels(label_path)
+
+        image, resize_scale = resize_keep_aspect(
+            image,
+            self.img_size,
         )
 
-        labels = self._load_labels(
-            label_path
-        )
+        resized_h, resized_w = image.shape
 
-        image, resize_scale = (
-            resize_keep_aspect(
-                image,
-                self.img_size,
-            )
-        )
+        x1, y1, x2, y2 = detect_breast_roi(image)
 
-        resized_h, resized_w = (
-            image.shape
-        )
+        crop = image[y1:y2, x1:x2]
 
-        x1, y1, x2, y2 = (
-            detect_breast_roi(
-                image
-            )
-        )
+        crop_h, crop_w = crop.shape
 
-        crop = image[
-            y1:y2,
-            x1:x2,
-        ]
-
-        crop_h, crop_w = (
-            crop.shape
-        )
-
-        labels_roi = (
-            transform_boxes_to_roi(
-                labels,
-                resized_w,
-                resized_h,
-                x1,
-                y1,
-                x2,
-                y2,
-            )
+        labels_roi = transform_boxes_to_roi(
+            labels,
+            resized_w,
+            resized_h,
+            x1,
+            y1,
+            x2,
+            y2,
         )
 
         crop_bgr = cv2.cvtColor(
@@ -1013,45 +555,32 @@ class VindrViTDataset(
             self.img_size,
         )
 
-        labels_final = (
-            transform_boxes_to_padded_image(
-                labels_roi,
-                crop_w,
-                crop_h,
-                scale,
-                pad_x,
-                pad_y,
-                self.img_size,
-            )
+        labels_final = transform_boxes_to_padded_image(
+            labels_roi,
+            crop_w,
+            crop_h,
+            scale,
+            pad_x,
+            pad_y,
+            self.img_size,
         )
 
         final_image = (
-            final_image.astype(
-                np.float32
-            )
-            / 255.0
+            final_image.astype(np.float32) / 255.0
         )
 
         final_image = np.transpose(
             final_image,
-            (
-                2,
-                0,
-                1,
-            ),
+            (2, 0, 1),
         )
 
-        image_tensor = (
-            torch.from_numpy(
-                final_image
-            ).float()
-        )
+        image_tensor = torch.from_numpy(
+            final_image
+        ).float()
 
-        target_tensor = (
-            torch.from_numpy(
-                labels_final
-            ).float()
-        )
+        target_tensor = torch.from_numpy(
+            labels_final
+        ).float()
 
         return (
             image_tensor,
@@ -1061,112 +590,173 @@ class VindrViTDataset(
 
 
 # ============================================================
-# COLLATE
+# 4K TRAINING SUBSAMPLING
 # ============================================================
 
-def collate_fn(batch):
+def downsample_train_dataset(
+    dataset,
+    max_images,
+    seed=42,
+):
+    if max_images is None:
+        return
 
-    images = []
+    max_images = int(max_images)
 
-    batch_idx = []
+    if max_images <= 0:
+        raise ValueError("max_images must be > 0.")
 
-    classes = []
-
-    boxes = []
-
-    paths = []
-
-    for i, (
-        image,
-        labels,
-        path,
-    ) in enumerate(batch):
-
-        images.append(image)
-
-        paths.append(path)
-
-        if labels.numel() == 0:
-
-            continue
-
-        n = labels.shape[0]
-
-        batch_idx.append(
-            torch.full(
-                (
-                    n,
-                ),
-                i,
-                dtype=torch.long,
-            )
+    if not hasattr(dataset, "records"):
+        raise RuntimeError(
+            "Dataset does not expose required attribute: records."
         )
 
-        classes.append(
-            labels[:, 0:1]
+    num_samples = len(dataset.records)
+
+    if num_samples <= max_images:
+        print(
+            f"[train] Downsampling skipped: "
+            f"{num_samples:,} <= {max_images:,}.",
+            flush=True,
+        )
+        return
+
+    # The ViT dataset does not need to expose is_positive.
+    # We derive it directly from the label files already stored
+    # in each record.
+    is_positive = []
+
+    for record in dataset.records:
+        label_path = record["label_path"]
+
+        if hasattr(dataset, "_label_has_boxes"):
+            has_box = dataset._label_has_boxes(label_path)
+        else:
+            has_box = False
+
+            if label_path.exists():
+                with open(label_path, "r") as f:
+                    for line in f:
+                        values = line.strip().split()
+
+                        if len(values) != 5:
+                            continue
+
+                        try:
+                            [float(v) for v in values]
+                            has_box = True
+                            break
+                        except ValueError:
+                            continue
+
+        is_positive.append(bool(has_box))
+
+    if len(is_positive) != num_samples:
+        raise RuntimeError(
+            "Positive flags and dataset length do not match."
         )
 
-        boxes.append(
-            labels[:, 1:5]
-        )
+    rng = random.Random(seed)
 
-    images = torch.stack(
-        images,
-        dim=0,
+    positive_indices = [
+        i
+        for i, flag in enumerate(is_positive)
+        if flag
+    ]
+
+    negative_indices = [
+        i
+        for i, flag in enumerate(is_positive)
+        if not flag
+    ]
+
+    num_positives = len(positive_indices)
+    num_negatives = len(negative_indices)
+
+    print(
+        f"[train] Original class mix: "
+        f"{num_positives:,} positives | "
+        f"{num_negatives:,} negatives",
+        flush=True,
     )
 
-    if batch_idx:
+    if num_positives == 0 or num_negatives == 0:
+        selected_indices = list(range(num_samples))
+        rng.shuffle(selected_indices)
+        selected_indices = selected_indices[:max_images]
 
-        batch_idx = torch.cat(
-            batch_idx,
-            dim=0,
+    elif num_positives < num_negatives:
+        keep_pos = positive_indices
+        num_negative_to_keep = max_images - num_positives
+
+        if num_negative_to_keep < 0:
+            raise RuntimeError(
+                "There are more positive images than max_images."
+            )
+
+        keep_neg = rng.sample(
+            negative_indices,
+            k=min(
+                num_negative_to_keep,
+                num_negatives,
+            ),
         )
 
-        classes = torch.cat(
-            classes,
-            dim=0,
-        )
-
-        boxes = torch.cat(
-            boxes,
-            dim=0,
-        )
+        selected_indices = keep_pos + keep_neg
 
     else:
+        keep_neg = negative_indices
+        num_positive_to_keep = max_images - num_negatives
 
-        batch_idx = torch.zeros(
-            (
-                0,
+        if num_positive_to_keep < 0:
+            raise RuntimeError(
+                "There are more negative images than max_images."
+            )
+
+        keep_pos = rng.sample(
+            positive_indices,
+            k=min(
+                num_positive_to_keep,
+                num_positives,
             ),
-            dtype=torch.long,
         )
 
-        classes = torch.zeros(
-            (
-                0,
-                1,
-            ),
-            dtype=torch.float32,
+        selected_indices = keep_pos + keep_neg
+
+    rng.shuffle(selected_indices)
+
+    if len(selected_indices) != max_images:
+        raise RuntimeError(
+            f"Could not select exactly {max_images:,} images. "
+            f"Selected {len(selected_indices):,}."
         )
 
-        boxes = torch.zeros(
-            (
-                0,
-                4,
-            ),
-            dtype=torch.float32,
-        )
+    dataset.records = [
+        dataset.records[i]
+        for i in selected_indices
+    ]
 
-    targets = {
-        "batch_idx": batch_idx,
-        "cls": classes,
-        "bboxes": boxes,
-    }
+    dataset.is_positive = [
+        is_positive[i]
+        for i in selected_indices
+    ]
 
-    return (
-        images,
-        targets,
-        paths,
+    final_positives = sum(dataset.is_positive)
+    final_negatives = (
+        len(dataset.is_positive) - final_positives
+    )
+
+    print(
+        f"[train] Downsampling applied: "
+        f"{num_samples:,} -> {len(dataset.records):,} images",
+        flush=True,
+    )
+
+    print(
+        f"[train] Final class mix: "
+        f"{final_positives:,} positives | "
+        f"{final_negatives:,} negatives",
+        flush=True,
     )
 
 
@@ -1174,17 +764,13 @@ def collate_fn(batch):
 # ViT BACKBONE
 # ============================================================
 
-class ViTBackbone(
-    nn.Module
-):
-
+class ViTBackbone(nn.Module):
     def __init__(
         self,
         model_name=MODEL_NAME,
         pretrained=True,
         block_indices=VIT_BLOCKS,
     ):
-
         super().__init__()
 
         print(
@@ -1199,61 +785,42 @@ class ViTBackbone(
             img_size=IMG_SIZE,
         )
 
-        self.block_indices = tuple(
-            block_indices
-        )
-
-        self.embed_dim = (
-            self.vit.embed_dim
-        )
+        self.block_indices = tuple(block_indices)
+        self.embed_dim = self.vit.embed_dim
 
         if self.embed_dim != VIT_EMBED_DIM:
-
             raise RuntimeError(
-                "Unexpected ViT embedding "
-                f"dimension: {self.embed_dim}. "
-                f"Expected {VIT_EMBED_DIM}."
+                f"Unexpected ViT embedding dimension: "
+                f"{self.embed_dim}. Expected {VIT_EMBED_DIM}."
             )
 
-        self.patch_size = (
-            self.vit.patch_embed.patch_size
-        )
+        self.patch_size = self.vit.patch_embed.patch_size
 
-        if isinstance(
-            self.patch_size,
-            tuple,
-        ):
+        if isinstance(self.patch_size, tuple):
+            self.patch_size = self.patch_size[0]
 
-            self.patch_size = (
-                self.patch_size[0]
-            )
+        self.patch_size = int(self.patch_size)
 
-        self.patch_size = int(
-            self.patch_size
-        )
-
-        self.feature_adapters = nn.ModuleList(
-            [
-                nn.Conv2d(
-                    VIT_EMBED_DIM,
-                    256,
-                    kernel_size=1,
-                    stride=1,
-                ),
-                nn.Conv2d(
-                    VIT_EMBED_DIM,
-                    512,
-                    kernel_size=1,
-                    stride=1,
-                ),
-                nn.Conv2d(
-                    VIT_EMBED_DIM,
-                    768,
-                    kernel_size=1,
-                    stride=1,
-                ),
-            ]
-        )
+        self.feature_adapters = nn.ModuleList([
+            nn.Conv2d(
+                VIT_EMBED_DIM,
+                256,
+                kernel_size=1,
+                stride=1,
+            ),
+            nn.Conv2d(
+                VIT_EMBED_DIM,
+                512,
+                kernel_size=1,
+                stride=1,
+            ),
+            nn.Conv2d(
+                VIT_EMBED_DIM,
+                768,
+                kernel_size=1,
+                stride=1,
+            ),
+        ])
 
         self.p5_downsample = nn.Conv2d(
             768,
@@ -1264,20 +831,17 @@ class ViTBackbone(
         )
 
         print(
-            f"[INIT] ViT embedding dimension: "
-            f"{self.embed_dim}",
+            f"[INIT] ViT embedding dimension: {self.embed_dim}",
             flush=True,
         )
 
         print(
-            f"[INIT] ViT patch size: "
-            f"{self.patch_size}",
+            f"[INIT] ViT patch size: {self.patch_size}",
             flush=True,
         )
 
         print(
-            f"[INIT] ViT blocks: "
-            f"{self.block_indices}",
+            f"[INIT] ViT blocks: {self.block_indices}",
             flush=True,
         )
 
@@ -1287,7 +851,6 @@ class ViTBackbone(
         height,
         width,
     ):
-
         num_prefix_tokens = getattr(
             self.vit,
             "num_prefix_tokens",
@@ -1295,37 +858,17 @@ class ViTBackbone(
         )
 
         if pos_embed.shape[1] <= num_prefix_tokens:
-
             return pos_embed
 
-        prefix = pos_embed[
-            :,
-            :num_prefix_tokens,
-        ]
+        prefix = pos_embed[:, :num_prefix_tokens]
+        patch_pos = pos_embed[:, num_prefix_tokens:]
 
-        patch_pos = pos_embed[
-            :,
-            num_prefix_tokens:,
-        ]
+        old_num_patches = patch_pos.shape[1]
+        old_size = int(old_num_patches ** 0.5)
 
-        old_num_patches = (
-            patch_pos.shape[1]
-        )
-
-        old_size = int(
-            old_num_patches ** 0.5
-        )
-
-        if (
-            old_size
-            * old_size
-            != old_num_patches
-        ):
-
+        if old_size * old_size != old_num_patches:
             raise RuntimeError(
-                "Cannot infer square positional "
-                "embedding grid from shape "
-                f"{patch_pos.shape}."
+                "Cannot infer square positional embedding grid."
             )
 
         patch_pos = patch_pos.reshape(
@@ -1335,19 +878,11 @@ class ViTBackbone(
             self.embed_dim,
         )
 
-        patch_pos = patch_pos.permute(
-            0,
-            3,
-            1,
-            2,
-        )
+        patch_pos = patch_pos.permute(0, 3, 1, 2)
 
         patch_pos = F.interpolate(
             patch_pos,
-            size=(
-                height,
-                width,
-            ),
+            size=(height, width),
             mode="bicubic",
             align_corners=False,
         )
@@ -1364,30 +899,19 @@ class ViTBackbone(
         )
 
         return torch.cat(
-            [
-                prefix,
-                patch_pos,
-            ],
+            [prefix, patch_pos],
             dim=1,
         )
 
-    def forward(
-        self,
-        x,
-    ):
-
+    def forward(self, x):
         B = x.shape[0]
 
-        x = self.vit.patch_embed(
-            x
-        )
+        x = self.vit.patch_embed(x)
 
         if x.ndim == 4:
-
             B2, H, W, C = x.shape
 
             if B2 != B:
-
                 raise RuntimeError(
                     "Unexpected ViT batch dimension."
                 )
@@ -1399,111 +923,60 @@ class ViTBackbone(
             )
 
         elif x.ndim == 3:
-
-            H = (
-                x.shape[1]
-                // (
-                    self.patch_size
-                    * 0
-                    + 1
-                )
-            )
-
-            grid_h = (
-                1024
-                // self.patch_size
-            )
-
+            grid_h = 1024 // self.patch_size
             grid_w = grid_h
-
             H = grid_h
             W = grid_w
 
         else:
-
             raise RuntimeError(
-                "Unexpected patch embedding "
-                f"shape: {x.shape}"
+                f"Unexpected patch embedding shape: {x.shape}"
             )
 
-        if hasattr(
-            self.vit,
-            "cls_token",
-        ):
-
+        if hasattr(self.vit, "cls_token"):
             cls_token = self.vit.cls_token
 
             if cls_token is not None:
-
-                cls_token = cls_token.expand(
-                    B,
-                    -1,
-                    -1,
-                )
+                cls_token = cls_token.expand(B, -1, -1)
 
                 x = torch.cat(
-                    (
-                        cls_token,
-                        x,
-                    ),
+                    (cls_token, x),
                     dim=1,
                 )
 
-        if hasattr(
-            self.vit,
-            "reg_token",
-        ):
-
+        if hasattr(self.vit, "reg_token"):
             reg_token = self.vit.reg_token
 
             if reg_token is not None:
-
-                reg_token = reg_token.expand(
-                    B,
-                    -1,
-                    -1,
-                )
+                reg_token = reg_token.expand(B, -1, -1)
 
                 prefix_count = (
                     1
-                    if hasattr(
-                        self.vit,
-                        "cls_token",
-                    )
+                    if hasattr(self.vit, "cls_token")
                     and self.vit.cls_token is not None
                     else 0
                 )
 
                 x = torch.cat(
                     (
-                        x[
-                            :,
-                            :prefix_count,
-                        ],
+                        x[:, :prefix_count],
                         reg_token,
-                        x[
-                            :,
-                            prefix_count:,
-                        ],
+                        x[:, prefix_count:],
                     ),
                     dim=1,
                 )
 
-        if hasattr(
-            self.vit,
-            "pos_embed",
-        ) and self.vit.pos_embed is not None:
-
-            pos_embed = (
-                self._interpolate_pos_embed(
-                    self.vit.pos_embed,
-                    H,
-                    W,
-                )
+        if (
+            hasattr(self.vit, "pos_embed")
+            and self.vit.pos_embed is not None
+        ):
+            pos_embed = self._interpolate_pos_embed(
+                self.vit.pos_embed,
+                H,
+                W,
             )
 
             if pos_embed.shape[1] != x.shape[1]:
-
                 raise RuntimeError(
                     "ViT positional embedding shape "
                     f"{pos_embed.shape} does not match "
@@ -1512,61 +985,35 @@ class ViTBackbone(
 
             x = x + pos_embed
 
-        if hasattr(
-            self.vit,
-            "pos_drop",
-        ):
-
-            x = self.vit.pos_drop(
-                x
-            )
+        if hasattr(self.vit, "pos_drop"):
+            x = self.vit.pos_drop(x)
 
         outputs = []
 
-        for block_index, block in enumerate(
-            self.vit.blocks
-        ):
-
+        for block_index, block in enumerate(self.vit.blocks):
             x = block(x)
 
-            if (
-                block_index
-                in self.block_indices
-            ):
-
+            if block_index in self.block_indices:
                 prefix_tokens = getattr(
                     self.vit,
                     "num_prefix_tokens",
                     1,
                 )
 
-                feature_tokens = x[
-                    :,
-                    prefix_tokens:,
-                ]
+                feature_tokens = x[:, prefix_tokens:]
 
-                expected_tokens = (
-                    H * W
-                )
+                expected_tokens = H * W
 
-                if (
-                    feature_tokens.shape[1]
-                    != expected_tokens
-                ):
-
+                if feature_tokens.shape[1] != expected_tokens:
                     raise RuntimeError(
-                        "Unexpected number of "
-                        "ViT patch tokens: "
-                        f"{feature_tokens.shape[1]} "
-                        f"vs expected {expected_tokens}."
+                        "Unexpected number of ViT patch tokens: "
+                        f"{feature_tokens.shape[1]} vs expected "
+                        f"{expected_tokens}."
                     )
 
                 feature = (
                     feature_tokens
-                    .transpose(
-                        1,
-                        2,
-                    )
+                    .transpose(1, 2)
                     .reshape(
                         B,
                         self.embed_dim,
@@ -1576,190 +1023,28 @@ class ViTBackbone(
                     .contiguous()
                 )
 
-                outputs.append(
-                    feature
-                )
+                outputs.append(feature)
 
         if len(outputs) != 3:
-
             raise RuntimeError(
-                "ViT did not return the expected "
-                f"three intermediate feature maps. "
-                f"Got {len(outputs)}."
+                "ViT did not return the expected three intermediate "
+                f"feature maps. Got {len(outputs)}."
             )
 
         return outputs
 
 
 # ============================================================
-# BALANCED TRAINING SUBSET
-# ============================================================
-
-def downsample_train_dataset(
-    dataset,
-    max_images,
-    seed=42,
-):
-
-    if max_images is None:
-        return
-
-    max_images = int(max_images)
-
-    if max_images <= 0:
-
-        raise ValueError(
-            "max_images must be > 0."
-        )
-
-    if (
-        not hasattr(dataset, "is_positive")
-        or
-        not hasattr(dataset, "records")
-    ):
-
-        raise RuntimeError(
-            "Dataset does not expose "
-            "required attributes."
-        )
-
-    num_samples = len(dataset.records)
-
-    if num_samples <= max_images:
-
-        print(
-            f"[train] Downsampling skipped: "
-            f"{num_samples:,} <= {max_images:,}."
-        )
-
-        return
-
-    if len(dataset.is_positive) != num_samples:
-
-        raise RuntimeError(
-            "Dataset positive flags and "
-            "dataset length do not match."
-        )
-
-    rng = random.Random(seed)
-
-    positive_indices = [
-        i
-        for i, flag in enumerate(
-            dataset.is_positive
-        )
-        if flag
-    ]
-
-    negative_indices = [
-        i
-        for i, flag in enumerate(
-            dataset.is_positive
-        )
-        if not flag
-    ]
-
-    num_positives = len(
-        positive_indices
-    )
-
-    num_negatives = len(
-        negative_indices
-    )
-
-    if num_positives == 0 or num_negatives == 0:
-
-        selected_indices = list(
-            range(num_samples)
-        )
-
-        rng.shuffle(selected_indices)
-
-        selected_indices = selected_indices[
-            :max_images
-        ]
-
-    elif num_positives < num_negatives:
-
-        keep_pos = positive_indices
-
-        keep_neg = rng.sample(
-            negative_indices,
-            k=max_images - num_positives,
-        )
-
-        selected_indices = (
-            keep_pos + keep_neg
-        )
-
-    else:
-
-        keep_neg = negative_indices
-
-        keep_pos = rng.sample(
-            positive_indices,
-            k=max_images - num_negatives,
-        )
-
-        selected_indices = (
-            keep_pos + keep_neg
-        )
-
-    rng.shuffle(selected_indices)
-
-    dataset.records = [
-        dataset.records[i]
-        for i in selected_indices
-    ]
-
-    dataset.is_positive = [
-        dataset.is_positive[i]
-        for i in selected_indices
-    ]
-
-    final_positives = sum(
-        dataset.is_positive
-    )
-
-    final_negatives = (
-        len(dataset.is_positive)
-        - final_positives
-    )
-
-    print(
-        f"[train] Downsampling applied: "
-        f"{num_samples:,} -> {len(dataset.records):,} images"
-    )
-
-    print(
-        f"[train] Final class mix: "
-        f"{final_positives:,} positives | "
-        f"{final_negatives:,} negatives"
-    )
-
-    if len(dataset.records) != max_images:
-
-        raise RuntimeError(
-            "Downsampling failed to produce "
-            "the requested number of images."
-        )
-
-
-# ============================================================
 # ViT + YOLOv8
 # ============================================================
 
-class ViTYOLO(
-    nn.Module
-):
-
+class ViTYOLO(nn.Module):
     def __init__(
         self,
         img_size=1024,
         num_classes=1,
         pretrained=True,
     ):
-
         super().__init__()
 
         print(
@@ -1790,38 +1075,17 @@ class ViTYOLO(
 
         self.detect.bias_init()
 
-    def forward(
-        self,
-        x,
-    ):
-
-        features = self.backbone(
-            x
-        )
+    def forward(self, x):
+        features = self.backbone(x)
 
         if len(features) != 3:
-
             raise RuntimeError(
                 "Expected 3 ViT feature maps."
             )
 
-        feature_p3 = (
-            self.backbone.feature_adapters[0](
-                features[0]
-            )
-        )
-
-        feature_p4 = (
-            self.backbone.feature_adapters[1](
-                features[1]
-            )
-        )
-
-        feature_p5 = (
-            self.backbone.feature_adapters[2](
-                features[2]
-            )
-        )
+        feature_p3 = self.backbone.feature_adapters[0](features[0])
+        feature_p4 = self.backbone.feature_adapters[1](features[1])
+        feature_p5 = self.backbone.feature_adapters[2](features[2])
 
         feature_p3 = F.interpolate(
             feature_p3,
@@ -1843,9 +1107,7 @@ class ViTYOLO(
             align_corners=False,
         )
 
-        feature_p5 = self.backbone.p5_downsample(
-            feature_p5
-        )
+        feature_p5 = self.backbone.p5_downsample(feature_p5)
 
         expected_p3 = (
             x.shape[-2] // 8,
@@ -1863,60 +1125,39 @@ class ViTYOLO(
         )
 
         if feature_p3.shape[-2:] != expected_p3:
-
             raise RuntimeError(
-                "Unexpected P3 shape: "
-                f"{feature_p3.shape[-2:]} "
+                f"Unexpected P3 shape: {feature_p3.shape[-2:]} "
                 f"expected {expected_p3}"
             )
 
         if feature_p4.shape[-2:] != expected_p4:
-
             raise RuntimeError(
-                "Unexpected P4 shape: "
-                f"{feature_p4.shape[-2:]} "
+                f"Unexpected P4 shape: {feature_p4.shape[-2:]} "
                 f"expected {expected_p4}"
             )
 
         if feature_p5.shape[-2:] != expected_p5:
-
             raise RuntimeError(
-                "Unexpected P5 shape: "
-                f"{feature_p5.shape[-2:]} "
+                f"Unexpected P5 shape: {feature_p5.shape[-2:]} "
                 f"expected {expected_p5}"
             )
 
-        predictions = self.detect(
-            [
-                feature_p3,
-                feature_p4,
-                feature_p5,
-            ]
-        )
-
-        return predictions
+        return self.detect([
+            feature_p3,
+            feature_p4,
+            feature_p5,
+        ])
 
 
 # ============================================================
 # ULTRALYTICS LOSS WRAPPER
 # ============================================================
 
-class DetectionLossModel(
-    nn.Module
-):
-
-    def __init__(
-        self,
-        detect,
-    ):
-
+class DetectionLossModel(nn.Module):
+    def __init__(self, detect):
         super().__init__()
 
-        self.model = nn.ModuleList(
-            [
-                detect
-            ]
-        )
+        self.model = nn.ModuleList([detect])
 
         self.args = SimpleNamespace(
             box=7.5,
@@ -1925,62 +1166,32 @@ class DetectionLossModel(
         )
 
 
-def create_loss(
-    model,
-):
+def create_loss(model):
+    loss_model = DetectionLossModel(model.detect)
+    return v8DetectionLoss(loss_model)
 
-    loss_model = DetectionLossModel(
-        model.detect
-    )
-
-    criterion = v8DetectionLoss(
-        loss_model
-    )
-
-    return criterion
-
-
-# ============================================================
-# LOSS HANDLING
-# ============================================================
 
 def compute_loss(
     criterion,
     predictions,
     targets,
 ):
-
     raw_loss, loss_items = criterion(
         predictions,
         targets,
     )
 
-    if not isinstance(
-        raw_loss,
-        torch.Tensor,
-    ):
-
+    if not isinstance(raw_loss, torch.Tensor):
         raise RuntimeError(
-            "Ultralytics loss returned "
-            f"unexpected type: "
-            f"{type(raw_loss)}"
+            f"Ultralytics loss returned unexpected type: {type(raw_loss)}"
         )
 
     if raw_loss.numel() == 1:
-
-        total_loss = raw_loss.reshape(
-            ()
-        )
-
+        total_loss = raw_loss.reshape(())
     else:
-
         total_loss = raw_loss.sum()
 
-    return (
-        total_loss,
-        loss_items,
-        raw_loss,
-    )
+    return total_loss, loss_items, raw_loss
 
 
 # ============================================================
@@ -1996,7 +1207,6 @@ def save_checkpoint(
     epoch,
     best_val_loss,
 ):
-
     checkpoint = {
         "epoch": epoch,
         "model": model.state_dict(),
@@ -2006,10 +1216,7 @@ def save_checkpoint(
         "best_val_loss": best_val_loss,
     }
 
-    torch.save(
-        checkpoint,
-        path,
-    )
+    torch.save(checkpoint, path)
 
 
 def load_checkpoint(
@@ -2019,10 +1226,8 @@ def load_checkpoint(
     scheduler=None,
     scaler=None,
 ):
-
     print(
-        f"[RESUME] Loading checkpoint: "
-        f"{path}",
+        f"[RESUME] Loading checkpoint: {path}",
         flush=True,
     )
 
@@ -2031,33 +1236,23 @@ def load_checkpoint(
         map_location=DEVICE,
     )
 
-    model.load_state_dict(
-        checkpoint["model"]
-    )
+    model.load_state_dict(checkpoint["model"])
 
     start_epoch = (
-        checkpoint.get(
-            "epoch",
-            0,
-        )
-        + 1
+        checkpoint.get("epoch", 0) + 1
     )
 
-    best_val_loss = (
-        checkpoint.get(
-            "best_val_loss",
-            float("inf"),
-        )
+    best_val_loss = checkpoint.get(
+        "best_val_loss",
+        float("inf"),
     )
 
     if optimizer is not None:
-
         optimizer.load_state_dict(
             checkpoint["optimizer"]
         )
 
     if scheduler is not None:
-
         scheduler.load_state_dict(
             checkpoint["scheduler"]
         )
@@ -2066,99 +1261,53 @@ def load_checkpoint(
         scaler is not None
         and "scaler" in checkpoint
     ):
-
         scaler.load_state_dict(
             checkpoint["scaler"]
         )
 
     print(
-        f"[RESUME] Starting from epoch "
-        f"{start_epoch}",
+        f"[RESUME] Starting from epoch {start_epoch}",
         flush=True,
     )
 
-    return (
-        start_epoch,
-        best_val_loss,
-    )
+    return start_epoch, best_val_loss
 
 
 # ============================================================
 # OUTPUT INSPECTION
 # ============================================================
 
-def inspect_prediction(
-    obj,
-    prefix="",
-):
-
-    if isinstance(
-        obj,
-        torch.Tensor,
-    ):
-
+def inspect_prediction(obj, prefix=""):
+    if isinstance(obj, torch.Tensor):
         print(
-            f"{prefix}"
-            f"Tensor "
-            f"shape={tuple(obj.shape)} "
-            f"dtype={obj.dtype}"
+            f"{prefix}Tensor shape={tuple(obj.shape)} dtype={obj.dtype}"
         )
-
         return
 
-    if isinstance(
-        obj,
-        dict,
-    ):
-
+    if isinstance(obj, dict):
         print(
-            f"{prefix}"
-            f"dict keys={list(obj.keys())}"
+            f"{prefix}dict keys={list(obj.keys())}"
         )
 
         for key, value in obj.items():
-
-            print(
-                f"{prefix}  [{key}]"
-            )
-
-            inspect_prediction(
-                value,
-                prefix + "    ",
-            )
+            print(f"{prefix}  [{key}]")
+            inspect_prediction(value, prefix + "    ")
 
         return
 
-    if isinstance(
-        obj,
-        (list, tuple),
-    ):
-
+    if isinstance(obj, (list, tuple)):
         print(
-            f"{prefix}"
-            f"{type(obj).__name__} "
-            f"length={len(obj)}"
+            f"{prefix}{type(obj).__name__} length={len(obj)}"
         )
 
-        for i, value in enumerate(
-            obj
-        ):
-
-            print(
-                f"{prefix}  [{i}]"
-            )
-
-            inspect_prediction(
-                value,
-                prefix + "    ",
-            )
+        for i, value in enumerate(obj):
+            print(f"{prefix}  [{i}]")
+            inspect_prediction(value, prefix + "    ")
 
         return
 
     print(
-        f"{prefix}"
-        f"type={type(obj)} "
-        f"value={obj}"
+        f"{prefix}type={type(obj)} value={obj}"
     )
 
 
@@ -2167,23 +1316,14 @@ def inspect_prediction(
 # ============================================================
 
 def run_test():
-
     print()
-
+    print("=" * 70)
+    print("ViT + YOLO INTEGRATION TEST")
     print("=" * 70)
 
-    print(
-        "ViT + YOLO INTEGRATION TEST"
-    )
-
-    print("=" * 70)
-
-    print(
-        f"Device: {DEVICE}"
-    )
+    print(f"Device: {DEVICE}")
 
     if torch.cuda.is_available():
-
         print(
             "GPU: "
             f"{torch.cuda.get_device_name(0)}"
@@ -2195,10 +1335,7 @@ def run_test():
         )
 
     print()
-
-    print(
-        "[TEST] Loading dataset..."
-    )
+    print("[TEST] Loading dataset...")
 
     dataset = VindrViTDataset(
         NETWORK_IMAGES,
@@ -2217,25 +1354,15 @@ def run_test():
         collate_fn=collate_fn,
     )
 
-    print(
-        "[TEST] Dataset ready."
-    )
-
+    print("[TEST] Dataset ready.")
     print()
-
-    print(
-        "[TEST] Creating model..."
-    )
+    print("[TEST] Creating model...")
 
     model = ViTYOLO(
         img_size=IMG_SIZE,
         num_classes=NUM_CLASSES,
         pretrained=True,
-    )
-
-    model = model.to(
-        DEVICE
-    )
+    ).to(DEVICE)
 
     model.detect.stride = torch.tensor(
         DETECT_STRIDES,
@@ -2243,13 +1370,9 @@ def run_test():
         device=DEVICE,
     )
 
-    print(
-        "[TEST] Creating loss..."
-    )
+    print("[TEST] Creating loss...")
 
-    criterion = create_loss(
-        model
-    )
+    criterion = create_loss(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -2257,9 +1380,7 @@ def run_test():
         weight_decay=WEIGHT_DECAY,
     )
 
-    amp_enabled = (
-        DEVICE.type == "cuda"
-    )
+    amp_enabled = DEVICE.type == "cuda"
 
     scaler = torch.amp.GradScaler(
         "cuda",
@@ -2272,70 +1393,34 @@ def run_test():
         if p.requires_grad
     )
 
-    print()
-
     print(
-        "Trainable parameters: "
-        f"{total_params / 1e6:.2f} M"
+        f"Trainable parameters: {total_params / 1e6:.2f} M"
     )
 
-    print()
-
-    print(
-        "[TEST] Searching for positive sample..."
-    )
+    print("[TEST] Searching for positive sample...")
 
     found = False
 
-    for (
-        images,
-        targets,
-        paths,
-    ) in loader:
-
-        if (
-            targets["bboxes"].shape[0]
-            > 0
-        ):
-
+    for images, targets, paths in loader:
+        if targets["bboxes"].shape[0] > 0:
             found = True
-
             break
 
     if not found:
-
         raise RuntimeError(
-            "No training image with "
-            "bounding boxes was found."
+            "No training image with bounding boxes was found."
         )
 
+    print("[TEST] Positive sample found.")
+    print(f"Image tensor: {tuple(images.shape)}")
     print(
-        "[TEST] Positive sample found."
+        f"Targets: {targets['bboxes'].shape[0]} boxes"
     )
-
-    print(
-        f"Image tensor: "
-        f"{tuple(images.shape)}"
-    )
-
-    print(
-        "Targets: "
-        f"{targets['bboxes'].shape[0]} boxes"
-    )
-
-    print(
-        f"DICOM: {paths[0]}"
-    )
+    print(f"DICOM: {paths[0]}")
 
     print()
-
-    print(
-        "Target boxes:"
-    )
-
-    print(
-        targets["bboxes"]
-    )
+    print("Target boxes:")
+    print(targets["bboxes"])
 
     images = images.to(
         DEVICE,
@@ -2351,10 +1436,7 @@ def run_test():
     }
 
     print()
-
-    print(
-        "[TEST] Forward pass..."
-    )
+    print("[TEST] Forward pass...")
 
     model.train()
 
@@ -2362,41 +1444,22 @@ def run_test():
         device_type="cuda",
         enabled=amp_enabled,
     ):
+        predictions = model(images)
 
-        predictions = model(
-            images
-        )
-
-    print(
-        "[TEST] YOLO Detect output:"
-    )
-
-    inspect_prediction(
-        predictions
-    )
+    print("[TEST] YOLO Detect output:")
+    inspect_prediction(predictions)
 
     print()
+    print("[TEST] Computing YOLOv8 loss...")
 
-    print(
-        "[TEST] Computing YOLOv8 loss..."
-    )
-
-    (
-        total_loss,
-        loss_items,
-        raw_loss,
-    ) = compute_loss(
+    total_loss, loss_items, raw_loss = compute_loss(
         criterion,
         predictions,
         targets,
     )
 
     print()
-
-    print(
-        "Raw loss:"
-    )
-
+    print("Raw loss:")
     print(
         raw_loss.detach()
         .float()
@@ -2405,47 +1468,28 @@ def run_test():
     )
 
     print()
-
-    print(
-        f"Total loss: "
-        f"{total_loss.item():.6f}"
-    )
+    print(f"Total loss: {total_loss.item():.6f}")
 
     print()
+    print("[TEST] Backward pass...")
 
-    print(
-        "[TEST] Backward pass..."
-    )
+    scaler.scale(total_loss).backward()
 
-    scaler.scale(
-        total_loss
-    ).backward()
+    scaler.unscale_(optimizer)
 
-    scaler.unscale_(
-        optimizer
-    )
-
-    grad_norm = (
-        torch.nn.utils.clip_grad_norm_(
-            model.parameters(),
-            max_norm=10.0,
-        )
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(),
+        max_norm=10.0,
     )
 
     print(
-        "Gradient norm: "
-        f"{float(grad_norm):.6f}"
+        f"Gradient norm: {float(grad_norm):.6f}"
     )
 
     vit_gradients = []
 
-    for (
-        name,
-        parameter,
-    ) in model.backbone.vit.named_parameters():
-
+    for name, parameter in model.backbone.vit.named_parameters():
         if parameter.grad is not None:
-
             vit_gradients.append(
                 parameter.grad.detach()
                 .abs()
@@ -2454,37 +1498,27 @@ def run_test():
             )
 
     if not vit_gradients:
-
         raise RuntimeError(
             "No gradients found in ViT. "
-            "The ViT backbone is not "
-            "being trained."
+            "The ViT backbone is not being trained."
         )
 
     print()
-
     print(
-        "ViT parameters with gradients: "
-        f"{len(vit_gradients)}"
+        f"ViT parameters with gradients: {len(vit_gradients)}"
     )
 
     print(
-        "Mean absolute ViT gradient: "
+        f"Mean absolute ViT gradient: "
         f"{np.mean(vit_gradients):.8e}"
     )
 
     print()
-
     print("=" * 70)
-
-    print(
-        "TEST PASSED"
-    )
-
+    print("TEST PASSED")
     print("=" * 70)
 
     print()
-
     print(
         "NETWORK DICOM"
         " -> breast_tissue + LINEAR"
@@ -2497,12 +1531,94 @@ def run_test():
     )
 
     print()
+    print("ViT is TRAINABLE.")
+    print()
 
-    print(
-        "ViT is TRAINABLE."
+
+# ============================================================
+# COLLATE
+# ============================================================
+
+def collate_fn(batch):
+    images = []
+    batch_idx = []
+    classes = []
+    boxes = []
+    paths = []
+
+    for i, (
+        image,
+        labels,
+        path,
+    ) in enumerate(batch):
+        images.append(image)
+        paths.append(path)
+
+        if labels.numel() == 0:
+            continue
+
+        n = labels.shape[0]
+
+        batch_idx.append(
+            torch.full(
+                (n,),
+                i,
+                dtype=torch.long,
+            )
+        )
+
+        classes.append(
+            labels[:, 0:1]
+        )
+
+        boxes.append(
+            labels[:, 1:5]
+        )
+
+    images = torch.stack(
+        images,
+        dim=0,
     )
 
-    print()
+    if batch_idx:
+        batch_idx = torch.cat(
+            batch_idx,
+            dim=0,
+        )
+
+        classes = torch.cat(
+            classes,
+            dim=0,
+        )
+
+        boxes = torch.cat(
+            boxes,
+            dim=0,
+        )
+
+    else:
+        batch_idx = torch.zeros(
+            (0,),
+            dtype=torch.long,
+        )
+
+        classes = torch.zeros(
+            (0, 1),
+            dtype=torch.float32,
+        )
+
+        boxes = torch.zeros(
+            (0, 4),
+            dtype=torch.float32,
+        )
+
+    targets = {
+        "batch_idx": batch_idx,
+        "cls": classes,
+        "bboxes": boxes,
+    }
+
+    return images, targets, paths
 
 
 # ============================================================
@@ -2518,18 +1634,13 @@ def train_one_epoch(
     epoch,
     accumulation_steps,
 ):
-
     model.train()
 
     running_loss = 0.0
 
-    optimizer.zero_grad(
-        set_to_none=True
-    )
+    optimizer.zero_grad(set_to_none=True)
 
-    amp_enabled = (
-        DEVICE.type == "cuda"
-    )
+    amp_enabled = DEVICE.type == "cuda"
 
     progress = tqdm(
         loader,
@@ -2545,7 +1656,6 @@ def train_one_epoch(
         targets,
         paths,
     ) in enumerate(progress):
-
         images = images.to(
             DEVICE,
             non_blocking=True,
@@ -2563,68 +1673,44 @@ def train_one_epoch(
             device_type="cuda",
             enabled=amp_enabled,
         ):
+            predictions = model(images)
 
-            predictions = model(
-                images
-            )
-
-            (
-                total_loss,
-                loss_items,
-                raw_loss,
-            ) = compute_loss(
+            total_loss, loss_items, raw_loss = compute_loss(
                 criterion,
                 predictions,
                 targets,
             )
 
             loss_backward = (
-                total_loss
-                / accumulation_steps
+                total_loss / accumulation_steps
             )
 
-        scaler.scale(
-            loss_backward
-        ).backward()
+        scaler.scale(loss_backward).backward()
 
         should_step = (
-            (
-                (step + 1)
-                % accumulation_steps
-            ) == 0
-            or
-            (step + 1)
-            == len(loader)
+            (step + 1) % accumulation_steps == 0
+            or (step + 1) == len(loader)
         )
 
         if should_step:
-
-            scaler.unscale_(
-                optimizer
-            )
+            scaler.unscale_(optimizer)
 
             torch.nn.utils.clip_grad_norm_(
                 model.parameters(),
                 max_norm=10.0,
             )
 
-            scaler.step(
-                optimizer
-            )
-
+            scaler.step(optimizer)
             scaler.update()
 
             optimizer.zero_grad(
                 set_to_none=True
             )
 
-        running_loss += (
-            total_loss.item()
-        )
+        running_loss += total_loss.item()
 
         avg_loss = (
-            running_loss
-            / (step + 1)
+            running_loss / (step + 1)
         )
 
         progress.set_postfix(
@@ -2635,10 +1721,7 @@ def train_one_epoch(
             ),
         )
 
-    return (
-        running_loss
-        / len(loader)
-    )
+    return running_loss / len(loader)
 
 
 # ============================================================
@@ -2651,23 +1734,18 @@ def validate(
     criterion,
     loader,
 ):
-
     model.train()
 
     for module in model.modules():
-
         if isinstance(
             module,
             nn.BatchNorm2d,
         ):
-
             module.eval()
 
     running_loss = 0.0
 
-    amp_enabled = (
-        DEVICE.type == "cuda"
-    )
+    amp_enabled = DEVICE.type == "cuda"
 
     progress = tqdm(
         loader,
@@ -2683,7 +1761,6 @@ def validate(
         targets,
         paths,
     ) in enumerate(progress):
-
         images = images.to(
             DEVICE,
             non_blocking=True,
@@ -2701,38 +1778,25 @@ def validate(
             device_type="cuda",
             enabled=amp_enabled,
         ):
+            predictions = model(images)
 
-            predictions = model(
-                images
-            )
-
-            (
-                total_loss,
-                loss_items,
-                raw_loss,
-            ) = compute_loss(
+            total_loss, loss_items, raw_loss = compute_loss(
                 criterion,
                 predictions,
                 targets,
             )
 
-        running_loss += (
-            total_loss.item()
-        )
+        running_loss += total_loss.item()
 
         avg_loss = (
-            running_loss
-            / (step + 1)
+            running_loss / (step + 1)
         )
 
         progress.set_postfix(
             loss=f"{avg_loss:.5f}",
         )
 
-    return (
-        running_loss
-        / len(loader)
-    )
+    return running_loss / len(loader)
 
 
 # ============================================================
@@ -2746,95 +1810,40 @@ def run_training(
     workers=NUM_WORKERS,
     img_size=IMG_SIZE,
 ):
-
     OUTPUT_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     print()
-
     print("=" * 70)
-
-    print(
-        "ViT-BASE + YOLOv8 TRAINING"
-    )
-
+    print("ViT-BASE + YOLOv8 TRAINING — 4K")
     print("=" * 70)
 
     print()
+    print("[INIT] Configuration")
 
+    print(f"  Network images: {NETWORK_IMAGES}")
+    print(f"  Annotations: {ANNOTATIONS_CSV}")
+    print(f"  Local labels: {LOCAL_DATASET}")
+    print(f"  Output: {OUTPUT_DIR}")
+    print(f"  Image size: {img_size} × {img_size}")
+    print(f"  Batch size: {batch_size}")
     print(
-        "[INIT] Configuration"
+        f"  Gradient accumulation: {ACCUMULATION_STEPS}"
     )
-
     print(
-        f"  Network images: "
-        f"{NETWORK_IMAGES}"
-    )
-
-    print(
-        f"  Annotations: "
-        f"{ANNOTATIONS_CSV}"
-    )
-
-    print(
-        f"  Local labels: "
-        f"{LOCAL_DATASET}"
-    )
-
-    print(
-        f"  Output: "
-        f"{OUTPUT_DIR}"
-    )
-
-    print(
-        f"  Image size: "
-        f"{img_size} × {img_size}"
-    )
-
-    print(
-        f"  Batch size: "
-        f"{batch_size}"
-    )
-
-    print(
-        "  Gradient accumulation: "
-        f"{ACCUMULATION_STEPS}"
-    )
-
-    print(
-        "  Effective batch size: "
+        f"  Effective batch size: "
         f"{batch_size * ACCUMULATION_STEPS}"
     )
-
-    print(
-        f"  Epochs: "
-        f"{epochs}"
-    )
-
-    print(
-        f"  Workers: "
-        f"{workers}"
-    )
-
-    print(
-        f"  Learning rate: "
-        f"{LEARNING_RATE}"
-    )
-
-    print(
-        f"  Weight decay: "
-        f"{WEIGHT_DECAY}"
-    )
-
-    print(
-        f"  Device: "
-        f"{DEVICE}"
-    )
+    print(f"  Train maximum images: {TRAIN_MAX_IMAGES:,}")
+    print(f"  Epochs: {epochs}")
+    print(f"  Workers: {workers}")
+    print(f"  Learning rate: {LEARNING_RATE}")
+    print(f"  Weight decay: {WEIGHT_DECAY}")
+    print(f"  Device: {DEVICE}")
 
     if torch.cuda.is_available():
-
         print(
             "  GPU: "
             f"{torch.cuda.get_device_name(0)}"
@@ -2846,93 +1855,27 @@ def run_training(
         )
 
     print()
-
-    print(
-        "[INIT] Pipeline"
-    )
-
-    print(
-        "  Network DICOM"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  breast_tissue + LINEAR"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  Breast ROI extraction"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  Resize + padding → 1024 × 1024"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  Balanced 4k training subset"
-    )
-
-    print(
-        "  ViT-Base pretrained + trainable"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  ViT intermediate features"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  P3 / P4 / P5"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  YOLOv8 Detect"
-    )
-
-    print(
-        "    ↓"
-    )
-
-    print(
-        "  v8DetectionLoss"
-    )
+    print("[INIT] Pipeline")
+    print("  Network DICOM")
+    print("    ↓")
+    print("  breast_tissue + LINEAR")
+    print("    ↓")
+    print("  Breast ROI extraction")
+    print("    ↓")
+    print("  Resize + padding → 1024 × 1024")
+    print("    ↓")
+    print("  ViT-Base pretrained + trainable")
+    print("    ↓")
+    print("  ViT intermediate features")
+    print("    ↓")
+    print("  P3 / P4 / P5")
+    print("    ↓")
+    print("  YOLOv8 Detect")
+    print("    ↓")
+    print("  v8DetectionLoss")
 
     print()
-
-    # --------------------------------------------------------
-    # DATASETS
-    # --------------------------------------------------------
-
-    print(
-        "[INIT] Loading training dataset...",
-        flush=True,
-    )
+    print("[INIT] Loading training dataset...", flush=True)
 
     train_dataset = VindrViTDataset(
         NETWORK_IMAGES,
@@ -2956,30 +1899,30 @@ def run_training(
     )
 
     print()
-
     print(
-        f"[INIT] Train images: "
+        f"[INIT] Train images before downsampling: "
         f"{len(train_dataset):,}"
     )
-
     print(
         f"[INIT] Val images: "
         f"{len(val_dataset):,}"
     )
 
+    # IMPORTANT:
+    # Downsample before constructing DataLoaders.
     downsample_train_dataset(
         train_dataset,
-        max_images=TRAIN_MAX_IMAGES,
-        seed=SEED,
+        TRAIN_MAX_IMAGES,
+        SEED,
     )
 
+    print()
     print(
         f"[INIT] Train images after downsampling: "
         f"{len(train_dataset):,}"
     )
 
     print()
-
     print(
         "[INIT] Creating DataLoaders...",
         flush=True,
@@ -2991,9 +1934,7 @@ def run_training(
         shuffle=True,
         num_workers=workers,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=(
-            workers > 0
-        ),
+        persistent_workers=workers > 0,
         collate_fn=collate_fn,
         drop_last=False,
     )
@@ -3004,9 +1945,7 @@ def run_training(
         shuffle=False,
         num_workers=workers,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=(
-            workers > 0
-        ),
+        persistent_workers=workers > 0,
         collate_fn=collate_fn,
         drop_last=False,
     )
@@ -3016,12 +1955,7 @@ def run_training(
         flush=True,
     )
 
-    # --------------------------------------------------------
-    # MODEL
-    # --------------------------------------------------------
-
     print()
-
     print(
         "[INIT] Building model...",
         flush=True,
@@ -3031,11 +1965,7 @@ def run_training(
         img_size=img_size,
         num_classes=NUM_CLASSES,
         pretrained=True,
-    )
-
-    model = model.to(
-        DEVICE
-    )
+    ).to(DEVICE)
 
     model.detect.stride = torch.tensor(
         DETECT_STRIDES,
@@ -3043,10 +1973,7 @@ def run_training(
         device=DEVICE,
     )
 
-    print(
-        "[INIT] Model ready.",
-        flush=True,
-    )
+    print("[INIT] Model ready.", flush=True)
 
     total_params = sum(
         p.numel()
@@ -3070,49 +1997,25 @@ def run_training(
     )
 
     print()
-
-    print(
-        "[INIT] ViT features:"
-    )
-
-    print(
-        "  P3: 256 × 128 × 128 | stride 8"
-    )
-
-    print(
-        "  P4: 512 × 64 × 64   | stride 16"
-    )
-
-    print(
-        "  P5: 768 × 32 × 32   | stride 32"
-    )
-
-    # --------------------------------------------------------
-    # LOSS
-    # --------------------------------------------------------
+    print("[INIT] ViT features:")
+    print("  P3: 256 × 128 × 128 | stride 8")
+    print("  P4: 512 × 64 × 64   | stride 16")
+    print("  P5: 768 × 32 × 32   | stride 32")
 
     print()
-
     print(
         "[INIT] Creating YOLOv8 detection loss...",
         flush=True,
     )
 
-    criterion = create_loss(
-        model
-    )
+    criterion = create_loss(model)
 
     print(
         "[INIT] Detection loss ready.",
         flush=True,
     )
 
-    # --------------------------------------------------------
-    # OPTIMIZER
-    # --------------------------------------------------------
-
     print()
-
     print(
         "[INIT] Creating AdamW optimizer...",
         flush=True,
@@ -3129,17 +2032,13 @@ def run_training(
         flush=True,
     )
 
-    scheduler = (
-        torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=epochs,
-            eta_min=LEARNING_RATE * 0.01,
-        )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=epochs,
+        eta_min=LEARNING_RATE * 0.01,
     )
 
-    amp_enabled = (
-        DEVICE.type == "cuda"
-    )
+    amp_enabled = DEVICE.type == "cuda"
 
     scaler = torch.amp.GradScaler(
         "cuda",
@@ -3147,27 +2046,15 @@ def run_training(
     )
 
     print(
-        f"[INIT] AMP enabled: "
-        f"{amp_enabled}"
+        f"[INIT] AMP enabled: {amp_enabled}"
     )
-
-    # --------------------------------------------------------
-    # RESUME
-    # --------------------------------------------------------
 
     start_epoch = 1
-
-    best_val_loss = float(
-        "inf"
-    )
+    best_val_loss = float("inf")
 
     if resume is not None:
-
         print()
-
-        print(
-            "[INIT] Resume requested."
-        )
+        print("[INIT] Resume requested.")
 
         (
             start_epoch,
@@ -3180,33 +2067,20 @@ def run_training(
             scaler,
         )
 
-    # --------------------------------------------------------
-    # TRAINING LOOP
-    # --------------------------------------------------------
-
     print()
-
     print("=" * 70)
-
-    print(
-        "STARTING TRAINING"
-    )
-
+    print("STARTING TRAINING")
     print("=" * 70)
 
     for epoch in range(
         start_epoch,
         epochs + 1,
     ):
-
         print()
-
         print("=" * 70)
-
         print(
             f"EPOCH {epoch:03d}/{epochs:03d}"
         )
-
         print("=" * 70)
 
         train_loss = train_one_epoch(
@@ -3220,11 +2094,9 @@ def run_training(
         )
 
         print()
-
         print(
             f"[EPOCH {epoch:03d}] "
-            f"Train loss: "
-            f"{train_loss:.6f}"
+            f"Train loss: {train_loss:.6f}"
         )
 
         val_loss = validate(
@@ -3234,33 +2106,21 @@ def run_training(
         )
 
         print()
-
         print(
             f"[EPOCH {epoch:03d}] "
-            f"Val loss: "
-            f"{val_loss:.6f}"
+            f"Val loss: {val_loss:.6f}"
         )
 
         scheduler.step()
 
-        current_lr = (
-            optimizer.param_groups[0]["lr"]
-        )
+        current_lr = optimizer.param_groups[0]["lr"]
 
         print(
             f"[EPOCH {epoch:03d}] "
-            f"Learning rate: "
-            f"{current_lr:.8e}"
+            f"Learning rate: {current_lr:.8e}"
         )
 
-        # ----------------------------------------------------
-        # LAST CHECKPOINT
-        # ----------------------------------------------------
-
-        last_path = (
-            OUTPUT_DIR
-            / "last.pt"
-        )
+        last_path = OUTPUT_DIR / "last.pt"
 
         save_checkpoint(
             last_path,
@@ -3273,22 +2133,13 @@ def run_training(
         )
 
         print(
-            f"[CHECKPOINT] Saved: "
-            f"{last_path}"
+            f"[CHECKPOINT] Saved: {last_path}"
         )
 
-        # ----------------------------------------------------
-        # BEST CHECKPOINT
-        # ----------------------------------------------------
-
         if val_loss < best_val_loss:
-
             best_val_loss = val_loss
 
-            best_path = (
-                OUTPUT_DIR
-                / "best.pt"
-            )
+            best_path = OUTPUT_DIR / "best.pt"
 
             save_checkpoint(
                 best_path,
@@ -3301,7 +2152,7 @@ def run_training(
             )
 
             print(
-                f"[CHECKPOINT] New best model!"
+                "[CHECKPOINT] New best model!"
             )
 
             print(
@@ -3310,22 +2161,15 @@ def run_training(
             )
 
             print(
-                f"[CHECKPOINT] Saved: "
-                f"{best_path}"
+                f"[CHECKPOINT] Saved: {best_path}"
             )
 
     print()
-
     print("=" * 70)
-
-    print(
-        "TRAINING FINISHED"
-    )
-
+    print("TRAINING FINISHED")
     print("=" * 70)
 
     print()
-
     print(
         f"Best validation loss: "
         f"{best_val_loss:.6f}"
@@ -3342,30 +2186,24 @@ def run_training(
 # ============================================================
 
 def main():
-
     parser = argparse.ArgumentParser(
         description=(
-            "ViT-Base + YOLOv8 "
-            "lesion detection training"
+            "ViT-Base + YOLOv8 lesion detection "
+            "training — 4k subset"
         )
     )
 
     parser.add_argument(
         "--test",
         action="store_true",
-        help=(
-            "Run one forward/backward "
-            "integration test only."
-        ),
+        help="Run one forward/backward integration test only.",
     )
 
     parser.add_argument(
         "--resume",
         type=str,
         default=None,
-        help=(
-            "Checkpoint to resume from."
-        ),
+        help="Checkpoint to resume from.",
     )
 
     parser.add_argument(
@@ -3394,14 +2232,10 @@ def main():
 
     args = parser.parse_args()
 
-    set_seed(
-        SEED
-    )
+    set_seed(SEED)
 
     if args.test:
-
         run_test()
-
         return
 
     run_training(
@@ -3414,5 +2248,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
