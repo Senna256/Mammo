@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 SWIN_JSON = Path("/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_swin/evaluation/positives/outputs/test_evaluation.json")
 VIT_JSON = Path("/home/enric/Mammo/Lesion Detection/Yolo v8/vindr_yolo_vit/evaluation_positives/outputs/metrics.json")
-OUTPUT_DIR = Path("/home/enric/Mammo/Lesion Detection/Yolo v8/Compare vit swin/compare_positive_train")
+OUTPUT_DIR = Path("/home/enric/Mammo/Lesion Detection/Yolo v8/Compare vit swin/metrics_comparison_positive_only")
 
 
 def load_json(path):
