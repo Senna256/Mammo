@@ -3,11 +3,12 @@
 
 Experiments: {Swin, ViT} x {full dataset, 4k images, positives}.
 
-Each experiment is evaluated with its OWN training script: the script's
-build_dataset_records() gives the TEST records, its Dataset class applies the
-exact preprocessing the model was trained with, and its model class loads the
-checkpoint. Only the metric code below is shared, so differences between
-experiments come from the models (and their preprocessing), not the evaluator.
+Each experiment is evaluated through its OWN training script (which re-exports
+Without _dataleak/common.py): build_dataset_records() gives the TEST records,
+VindrDataset applies the preprocessing the model was trained with, and the
+script's MODEL_CLASS loads the checkpoint. Only the metric code below is
+shared, so differences between experiments come from the models (and their
+preprocessing), not the evaluator.
 
 Pipeline per experiment:
     TEST DICOM -> script preprocessing -> model.eval() -> NMS -> predictions.csv
@@ -35,7 +36,6 @@ denominator. Matching is done in each model's 1024x1024 input space.
 import argparse
 import contextlib
 import importlib.util
-import inspect
 import io
 import json
 import time
@@ -104,14 +104,6 @@ def load_training_module(key):
     return module
 
 
-def find_class(module, predicate):
-    matches = [obj for name, obj in vars(module).items()
-               if inspect.isclass(obj) and obj.__module__ == module.__name__ and predicate(name)]
-    if len(matches) != 1:
-        raise RuntimeError(f"Expected one matching class in {module.__name__}, found {len(matches)}")
-    return matches[0]
-
-
 def image_key(dicom_path):
     path = Path(dicom_path)
     return f"{path.parent.name}/{path.stem}"
@@ -122,8 +114,8 @@ def image_key(dicom_path):
 
 def run_inference(key, checkpoint_name, batch_size, workers, limit, output_dir):
     module = load_training_module(key)
-    model_cls = find_class(module, lambda n: n.endswith("YOLO"))
-    dataset_cls = find_class(module, lambda n: n.startswith("Vindr") and n.endswith("Dataset"))
+    model_cls = module.MODEL_CLASS
+    dataset_cls = module.VindrDataset
     img_size = module.IMG_SIZE
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -395,10 +387,9 @@ def write_report(summary, comparison_dir, checkpoint_name):
         "",
         "Caveats",
         "-" * 70,
-        "- ViT full / ViT 4k crop with mammo_prep get_breast_mask; the other four use",
-        "  detect_breast_roi. Each model is evaluated with its own preprocessing.",
-        "- ViT positives selected best.pt on a positives-only validation set; Swin",
-        "  positives on the full validation set.",
+        "- All six experiments share Without _dataleak/common.py (same detect_breast_roi",
+        "  crop, splits, validate(), batch size 8 x 4 accumulation); they differ only in",
+        "  backbone and TRAIN regime. VAL is never filtered.",
     ]
     path = comparison_dir / "comparison_report.txt"
     path.write_text("\n".join(lines) + "\n")
