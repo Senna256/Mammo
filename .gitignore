@@ -32,6 +32,8 @@ Thumbs.db
 *.txt
 *.json
 *.npz
+*.pdf
+
 
 # Ultralytics / YOLO
 predictions.json
