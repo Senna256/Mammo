@@ -42,6 +42,22 @@ def calculate_windowing(
     method="percentile_2_98",
     exclude_background=True,
 ):
+    """
+    Window (center, width) computed from the image intensities.
+
+    method: one of WINDOW_METHODS except "dicom".
+        percentile_a_b    window between the a-th and b-th percentiles
+        breast_tissue     percentiles 25-95, width x 1.5 (used by preprocess_mammogram)
+        statistical(_wide) mean +/- 2 (3) std
+        full_range        min to max
+        histogram_peak    centred on the histogram peak, width 1.75 x FWHM
+    exclude_background: ignore pixels <= 0 when computing the statistics.
+
+    Returns
+    -------
+    (center, width)
+    """
+
     if method == "dicom":
         raise ValueError(
             "'dicom' requires a DICOM dataset. "
@@ -128,6 +144,10 @@ def calculate_windowing(
 
 
 def calculate_all_methods(image, exclude_background=True):
+    """
+    {method: (center, width)} for every method except "dicom". Useful to compare windows.
+    """
+
     return {
         method: calculate_windowing(
             image,
@@ -140,6 +160,17 @@ def calculate_all_methods(image, exclude_background=True):
 
 
 def get_dicom_voi_lut_params(dicom_dataset):
+    """
+    Window stored in the DICOM header (WindowCenter / WindowWidth / VOILUTFunction).
+
+    Falls back to "breast_tissue" computed on pixel_array when the header has no valid window.
+
+    Returns
+    -------
+    dict with window_center, window_width, rescale_intercept, rescale_slope,
+    voi_lut_function and source ("dicom" or "calculated").
+    """
+
     window_center = _first_numeric(
         getattr(dicom_dataset, "WindowCenter", None)
     )
@@ -186,6 +217,10 @@ def get_dicom_voi_lut_params(dicom_dataset):
 
 
 def should_invert_monochrome1(dicom_dataset):
+    """
+    True if the DICOM is MONOCHROME1 (bright background, dark tissue).
+    """
+
     return (
         getattr(
             dicom_dataset,
@@ -197,6 +232,12 @@ def should_invert_monochrome1(dicom_dataset):
 
 
 def normalize_photometric(image, dicom_dataset):
+    """
+    Inverts MONOCHROME1 images as max + min - image so that tissue is bright.
+
+    preprocess_mammogram() inverts as max - image instead.
+    """
+
     image = np.asarray(image)
 
     if should_invert_monochrome1(dicom_dataset):
@@ -211,6 +252,13 @@ def get_windowing_for_dicom(
     method="dicom",
     exclude_background=True,
 ):
+    """
+    Window parameters for a DICOM: from the header (method="dicom") or computed
+    from the image with calculate_windowing() (any other method).
+
+    Returns the same dict as get_dicom_voi_lut_params().
+    """
+
     if method not in WINDOW_METHODS:
         raise ValueError(
             f"Unknown windowing method '{method}'. "
@@ -309,6 +357,13 @@ def apply_windowing(
     y_min=0,
     y_max=255,
 ):
+    """
+    Applies a window to the image following the DICOM VOI LUT definition.
+
+    voi_func: "LINEAR" (DICOM standard, center - 0.5 / width - 1), "LINEAR_EXACT" or "SIGMOID".
+    Returns float32 values in [y_min, y_max] (SIGMOID is not clipped).
+    """
+
     return _apply_windowing_np(
         image,
         window_width=window_width,
@@ -327,6 +382,17 @@ def preprocess_window(
     exclude_background=True,
     output_dtype=np.uint8,
 ):
+    """
+    Windowing in one call: picks the window (get_windowing_for_dicom() or
+    calculate_windowing()) and applies it (apply_windowing()).
+
+    image: pixel array (e.g. from load_dicom()); MONOCHROME1 must already be inverted.
+    dicom_dataset: needed for method="dicom"; also provides the VOI LUT function.
+    method: see calculate_windowing(); "dicom" uses the header window.
+    voi_func: overrides the DICOM VOI LUT function ("LINEAR", "LINEAR_EXACT", "SIGMOID").
+    output_dtype: np.uint8 rounds to [0, 255]; any other dtype returns the raw values.
+    """
+
     if method == "dicom" and dicom_dataset is None:
         raise ValueError(
             "dicom_dataset is required when method='dicom'."
