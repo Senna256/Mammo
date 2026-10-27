@@ -40,6 +40,16 @@ python examples/demo_preprocess.py --dicom image.dicom --box 2492 1878 2596 1974
 
 `--box x1 y1 x2 y2` és una lesió en píxels del DICOM original. Es pot repetir per indicar-ne diverses.
 
+`examples/demo_breast_roi.py` explica gràficament com es troba la mama (pas 5). Mostra:
+
+- l'element estructurant, una el·lipse de 31 × 31 px;
+- cada pas de la màscara: llindar, tancament, obertura i contorn més gran;
+- dos zooms, amb el cercle dibuixat a escala: un de la zona on el tancament omple més píxels i un de la zona on l'obertura n'elimina més.
+
+```bash
+python examples/demo_breast_roi.py --dicom image.dicom --out roi.png
+```
+
 ## Preprocessament
 
 ### Passos
