@@ -17,8 +17,8 @@ How it works
 - Detection matching (greedy, IoU threshold) is done per image and does not
   depend on which studies are drawn, so it is computed once. A replicate only
   re-weights each detection, GT box and image by the number of times its study
-  was drawn, then recomputes TPR@FPPI and AP with the same functions as
-  evaluate_all.py. With all weights = 1 the point estimates are exactly the ones
+  was drawn, then recomputes TPR@FPPI and AP with the same functions as the
+  evaluation scripts. With all weights = 1 the point estimates are exactly the ones
   in summary_comparison.csv (checked at start-up).
 
 Outputs (in comparison/bootstrap/):
@@ -28,7 +28,7 @@ Outputs (in comparison/bootstrap/):
     bootstrap_paired_differences.png boxplots of model - baseline differences
     bootstrap_samples.npz            raw replicates
 
-Run evaluate_all.py first so the cached predictions exist.
+Run the six evaluation scripts (*/Test/*/eval_*.py) and compare_all.py first.
 """
 import argparse
 import contextlib
@@ -46,12 +46,12 @@ from tqdm import tqdm
 
 COMPARISON_DIR = Path(__file__).resolve().parent
 OUTPUTS_DIR = COMPARISON_DIR.parent
-sys.path.insert(0, str(OUTPUTS_DIR.parent))  # Test/, for evaluate_all.py
+sys.path.insert(0, str(OUTPUTS_DIR.parent))  # Test/, for compare_all.py
 
-from evaluate_all import (AXIS_COLOR, EXPERIMENTS, GRID_COLOR, INK_MUTED,  # noqa: E402
-                          INK_PRIMARY, INK_SECONDARY, REGIME_COLORS, SURFACE,
-                          average_precision, image_key, load_training_module,
-                          match_detections, tpr_at_fppi)
+from compare_all import (AXIS_COLOR, EXPERIMENTS, GRID_COLOR, INK_MUTED,  # noqa: E402
+                         INK_PRIMARY, INK_SECONDARY, REGIME_COLORS, SURFACE,
+                         average_precision, image_key, load_training_module,
+                         match_detections, tpr_at_fppi)
 
 # ============================================================
 # CONFIGURATION
@@ -146,7 +146,7 @@ def run_bootstrap(keys, n_boot, seed):
     iou_thresholds = sorted({iou for _, iou, _, _ in METRICS})
     tables = {key: detection_tables(key, images, iou_thresholds) for key in keys}
 
-    # Sanity check: unit weights reproduce evaluate_all.py.
+    # Sanity check: unit weights reproduce summary_comparison.csv.
     summary = pd.read_csv(COMPARISON_DIR / "summary_comparison.csv").set_index("experiment")
     ones = np.ones(n_studies)
     estimates = {key: metric_values(tables[key], ones, gt_per_study, images_per_study) for key in keys}

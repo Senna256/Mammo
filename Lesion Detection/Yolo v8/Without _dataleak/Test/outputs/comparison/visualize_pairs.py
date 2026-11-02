@@ -7,7 +7,7 @@ For every selected image three figures are written:
     pairs/positives/<image>.png  Swin · positives  vs ViT · positives
 
 Each panel shows the image exactly as that model saw it (its own breast crop
-and 1024x1024 resize/pad), with the cached predictions from evaluate_all.py
+and 1024x1024 resize/pad), with the cached predictions of the evaluation scripts
 (outputs/<experiment>/predictions.csv, already after NMS) and the ground truth
 mapped into the same space (outputs/<experiment>/ground_truth.csv).
 
@@ -19,7 +19,7 @@ a fixed threshold instead.
 Box colors: ground truth = yellow dashed, TP (IoU >= --iou with a GT) = green,
 FP = red. The number on each box is the confidence.
 
-Run evaluate_all.py first so the cached predictions exist.
+Run the six evaluation scripts (*/Test/*/eval_*.py) first so the cached predictions exist.
 
 Examples:
     python visualize_pairs.py --n 10
@@ -42,10 +42,10 @@ from matplotlib.patches import Rectangle
 
 COMPARISON_DIR = Path(__file__).resolve().parent
 OUTPUTS_DIR = COMPARISON_DIR.parent
-sys.path.insert(0, str(OUTPUTS_DIR.parent))  # Test/, for evaluate_all.py
+sys.path.insert(0, str(OUTPUTS_DIR.parent))  # Test/, for compare_all.py
 
-from evaluate_all import (EXPERIMENTS, image_key, iou_matrix,  # noqa: E402
-                          load_training_module, match_detections)
+from compare_all import (EXPERIMENTS, image_key, iou_matrix,  # noqa: E402
+                         load_training_module, match_detections)
 
 # ============================================================
 # CONFIGURATION
@@ -120,7 +120,7 @@ def draw_panel(ax, image, predictions, gt_boxes, threshold, iou_threshold, title
     ious = iou_matrix(boxes, gt_boxes) if len(boxes) and len(gt_boxes) else np.zeros((len(boxes), 0))
     n_tp = 0
     for row, ((x1, y1, x2, y2), conf) in enumerate(zip(boxes, kept["confidence"])):
-        # Same greedy matching as evaluate_all: each GT is matched at most once.
+        # Same greedy matching as the evaluation scripts: each GT is matched at most once.
         candidates = np.where(matched, -1.0, ious[row]) if len(gt_boxes) else np.array([-1.0])
         best = int(np.argmax(candidates))
         is_tp = candidates[best] >= iou_threshold
@@ -178,10 +178,12 @@ def parse_args():
 def select_images(args, ground_truth_by_key):
     if args.images:
         return args.images
-    # Images present in every experiment's TEST split; positives = GT in all of them.
+    # All TEST images (identical for every experiment); positives = GT in all of them.
     keys = [experiment_key(b, r) for r in args.regimes for b in ("Swin", "ViT")]
-    all_ids = set.intersection(*(set(pd.read_csv(OUTPUTS_DIR / k / "predictions.csv",
-                                                 usecols=["image_id"])["image_id"]) for k in keys))
+    module = load_training_module(keys[0])
+    with contextlib.redirect_stdout(io.StringIO()):
+        _, _, test_records = module.build_dataset_records(module.ANNOTATIONS_CSV, module.NETWORK_IMAGES)
+    all_ids = {image_key(r["dicom_path"]) for r in test_records}
     positive_ids = set.intersection(*(set(ground_truth_by_key[k]["image_id"]) for k in keys))
     pool = sorted(all_ids - positive_ids if args.negatives else positive_ids)
     rng = np.random.default_rng(args.seed)
