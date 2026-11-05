@@ -91,7 +91,7 @@ SWIN_CHANNELS = (192, 384, 768)  # channels of Swin stages 1-3 (strides 8 / 16 /
 # Detections: Ultralytics validation defaults.
 CONF_THRESHOLD = 0.001
 NMS_IOU_THRESHOLD = 0.70
-MAX_DETECTIONS = 300
+MAX_DETECTIONS = 10
 
 # Metrics.
 IOU_THRESHOLDS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55,

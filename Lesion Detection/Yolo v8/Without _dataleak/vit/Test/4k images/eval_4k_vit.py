@@ -94,7 +94,7 @@ VIT_FEATURE_CHANNELS = (256, 512, 768)  # channels of P3 / P4 / P5 after the 1x1
 # Detections: Ultralytics validation defaults.
 CONF_THRESHOLD = 0.001
 NMS_IOU_THRESHOLD = 0.70
-MAX_DETECTIONS = 300
+MAX_DETECTIONS = 10
 
 # Metrics.
 IOU_THRESHOLDS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55,

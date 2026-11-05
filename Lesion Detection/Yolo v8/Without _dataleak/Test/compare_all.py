@@ -61,8 +61,8 @@ EXPERIMENTS = {
 
 # Same values as the evaluation scripts (used for the plots and the report).
 CONF_THRESHOLD = 0.001
-NMS_IOU_THRESHOLD = 0.70
-MAX_DETECTIONS = 300
+NMS_IOU_THRESHOLD = 0.70   
+MAX_DETECTIONS = 10
 IOU_THRESHOLDS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55,
                   0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
 FPPI_POINTS = [0.25, 0.5, 1.0, 2.0, 4.0]
