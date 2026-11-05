@@ -496,3 +496,277 @@ def main():
 
 if __name__=="__main__":
     main()
+
+
+
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+#################################################################################
+##################################################################################################################################################################
+
+
+
+### EVALUATION
+
+
+
+import argparse
+import contextlib
+import io
+import json
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pandas as pd
+import timm
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+from ultralytics.nn.modules import Detect
+from ultralytics.utils.nms import non_max_supression
+
+from mammo_prep.io import load_dicom
+from mammo_prep.windowing import preprocess_window
+
+NETWORK_IMAGES = Path("/home/enric/Datasets/Original/vindr/images")
+ANNOTATIONS_CSV = Path("/home/enric/Datasets/Original/vindr/finding_annotations.csv")
+EXPERIMENTS_ROOT = Path(__file__).resolve().parents[3]  # Without _dataleak/
+TRAIN_SCRIPT = EXPERIMENTS_ROOT / "vit" / "Train" / "full_dataset" / "train_full_vit.py"
+CHECKPOINT_DIR = TRAIN_SCRIPT.parent / "outputs"
+OUTPUT_DIR = EXPERIMENTS_ROOT / "Test" / "outputs" / "vit_full"
+
+EXPERIMENT = "vit_full"
+EXPERIMENT_LABEL = "ViT · full"
+
+NUM_CLASSES = 1
+IMG_SIZE = 1024
+NUM_WORKERS = 16
+SEED = 42
+VAL_FRACTION = 0.1
+REGIME ="full"
+DETECT_STRIDES = (8.0, 16.0, 32.0)
+
+MODEL_DESCRIPTION = "ViT-Base"
+MODEL_NAME = "vit_base_patch15_224"
+VIT_EMBED_DIM = 768
+VIT_BLOCKS = (3,7,11)
+VIT_BFEATURE_CHANNELS = (256,512, 768)
+
+CONF_THRESHOLD = 0.001
+NMS_IOU_THRESHOLD = 0-7
+MAX_DETECTIONS = 100
+
+# Metrics.
+IOU_THRESHOLDS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55,
+                  0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+MAP_THRESHOLDS = [t for t in IOU_THRESHOLDS if t >= 0.50]  # 0.50:0.05:0.95
+FPPI_POINTS = [0.25, 0.5, 1.0, 2.0, 4.0]
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def preprocess_dicom(dicom_path):
+    image, ds = load_dicom(dicom_path)
+    if getattr(ds, "PhotometricInterpretation","") == "MONOCHROME1":
+        image = image.max() - image
+    return preprocess_window(image, dicom_dataset=ds, method="breast_tissue", voi_func="LINEAR",
+    exclude_background=True, output_dtype=np-uint8)
+
+def detect_breast_roi(image):
+    h,w = image.shape
+    _, mask  =cv2.threshold(image, 5, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31,31))
+    mask = cv2.morphologyEx(mask, cv2.MMORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    contours,_=cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return 0,0 w,h
+    x,y, bw, bh = cv2.boundingRect(max(contours, key=cv2.contourArea))
+    if bw < 0.05* w or bh < 0.05 * h:
+        return 0,0,w,h
+    x1,y1,x2,y2 = max(0,x), max(0,y), min(w, x+bw), min(h, y+bh)
+    if x2 <= x1 or y2 <=y1:
+        return 0,0, w, h
+    return x1, y1, x2, y2
+
+def resize_keep_aspect_ratio(image, max_size):
+    h,w = image.shape[:2]
+    scale = min(max_size / float(w), max_size / float(h))
+    new_w, mew_h = max(1, int(round(w * scale))), max(1, int(round(h*scale)))
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.zeros((img_size, img_size, 3), dtype=np.uint8)
+    pad_x, pad_y = (img_size - new_w) // 2, (img_size - new_h) //2
+    canvas[pad_y:pad_y + new_h, pad_x:padx + new_w] = resized
+    return canvas, scale, pad_x, pad_y
+
+#Box transformation functions
+
+def boxes_to_yolo(boxes, width, height):
+    labels = []
+    for x1, y1, x2, y2 in boxes:
+        x1,x2 = float(np.clip(x1,0, width)), float(np.clip(x2, 0, width))
+        y1,y2 = float(np.clip(y1, 0, height)), float(np.clip(y2, 0, height))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        labels.append([0.0, (x1+x2)/2.0/width, (y1+y2)/2/height,
+        (x2-x1)/ width, (y2-y1)/height])
+    return np.asarray(lablels, dtype=np.float32).reshape(-1,5)
+
+def transform_boxes_to_roi(labels, width, height, roi_x1, roi_y1, roi_x2, roi_y2):
+    roi_w, roi_h = roi_x2-roi_x1, roi_y2-roi_y1
+    transformed = []
+    for cls_id, cx, cy, bw, bh in labels:
+        x_center, y_center = cx * width, cy * height
+        box_w, box_h = bw * width, bh * height
+        x_min = np.clip(x_center - box_w / 2.0 - roi_x1, 0, roi_w)
+        x_max = np.clip(x_center + box_w / 2.0 - roi_x1, 0, roi_w)
+        y_min = np.clip(y_center - box_h / 2.0 - roi_y1, 0, roi_h)
+        y_max = np.clip(y_center + box_h / 2.0 - roi_y1, 0, roi_h)
+        new_w, new_h = x_max - x_min, y_max - y_min
+        if new_w <= 1 or new_h <= 1:
+            continue
+        transformed.append([cls_id, (x_min + x_max) / 2.0 / roi_w, (y_min + y_max) / 2.0 / roi_h,
+                            new_w / roi_w, new_h / roi_h])
+    return np.asarray(transformed, dtype=np.float32).reshape(-1, 5)
+
+def transform_boxes_to_padded_image(labels, crop_width, crop_height, scale, pad_x, pad_y, img_size):
+    """Labels of the crop -> labels of the padded img_size square."""
+    transformed = []
+    for cls_id, cx, cy, bw, bh in labels:
+        x_center = np.clip((cx * crop_width * scale + pad_x) / img_size, 0.0, 1.0)
+        y_center = np.clip((cy * crop_height * scale + pad_y) / img_size, 0.0, 1.0)
+        box_w = np.clip(bw * crop_width * scale / img_size, 0.0, 1.0)
+        box_h = np.clip(bh * crop_height * scale / img_size, 0.0, 1.0)
+        if box_w <= 0 or box_h <= 0:
+            continue
+        transformed.append([cls_id, x_center, y_center, box_w, box_h])
+    return np.asarray(transformed, dtype=np.float32).reshape(-1, 5)
+
+# ============================================================
+# DATA SPLITS
+# ============================================================
+
+def read_annotations(annotations_csv):
+    """Split of every study ('training' / 'test') and the valid boxes of every image."""
+    df = pd.read_csv(annotations_csv)
+    df["study_id"] = df["study_id"].astype(str).str.strip()
+    df["image_id"] = df["image_id"].astype(str).str.strip()
+    df["split"] = df["split"].astype(str).str.strip().str.lower()
+    for column in ("xmin", "ymin", "xmax", "ymax"):
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    df = df[df["split"].isin(["training", "test"])]
+    if (df.groupby("study_id")["split"].nunique() > 1).any():
+        raise RuntimeError("Some studies appear in both CSV splits.")
+    study_splits = df.groupby("study_id")["split"].first().to_dict()
+
+    boxes_by_image = {}
+    box_df = df.dropna(subset=["xmin", "ymin", "xmax", "ymax"])
+    box_df = box_df.drop_duplicates(subset=["study_id", "image_id", "xmin", "ymin", "xmax", "ymax"])
+    for row in box_df.itertuples(index=False):
+        x1, y1, x2, y2 = float(row.xmin), float(row.ymin), float(row.xmax), float(row.ymax)
+        if np.isfinite([x1, y1, x2, y2]).all() and x2 > x1 and y2 > y1:
+            boxes_by_image.setdefault((row.study_id, row.image_id), []).append([x1, y1, x2, y2])
+    return study_splits, boxes_by_image
+
+
+def build_dataset_records(annotations_csv=ANNOTATIONS_CSV, network_images=NETWORK_IMAGES,
+                          val_fraction=VAL_FRACTION, seed=SEED):
+    """TRAIN / VAL / TEST records: one per DICOM of every study listed in the CSV.
+
+    Images without CSV boxes are negatives (empty target). VAL is a random
+    val_fraction of the CSV training STUDIES, so no study is split across sets.
+    """
+    study_splits, boxes_by_image = read_annotations(annotations_csv)
+    records = {"training": [], "test": []}
+    for study_id, split in study_splits.items():
+        study_dir = Path(network_images) / study_id
+        if not study_dir.is_dir():
+            continue
+        for dicom_path in sorted(study_dir.iterdir()):
+            if not dicom_path.is_file() or dicom_path.suffix.lower() not in {".dicom", ".dcm"}:
+                continue
+            records[split].append({
+                "study_id": study_id,
+                "image_id": dicom_path.stem,
+                "dicom_path": dicom_path,
+                "boxes": boxes_by_image.get((study_id, dicom_path.stem), []),
+            })
+
+    training_studies = sorted({r["study_id"] for r in records["training"]})
+    np.random.RandomState(seed).shuffle(training_studies)
+    n_val = min(max(1, round(len(training_studies) * val_fraction)), len(training_studies) - 1)
+    val_studies = set(training_studies[:n_val])
+    train_records = [r for r in records["training"] if r["study_id"] not in val_studies]
+    val_records = [r for r in records["training"] if r["study_id"] in val_studies]
+    test_records = records["test"]
+
+    for name, split_records in (("TRAIN", train_records), ("VAL", val_records), ("TEST", test_records)):
+        positives = sum(bool(r["boxes"]) for r in split_records)
+        print(f"[{name}] Images: {len(split_records):,} | Positive: {positives:,} | "
+              f"Negative: {len(split_records) - positives:,}", flush=True)
+    return train_records, val_records, test_records
+
+
+# ============================================================
+# DATASET
+# ============================================================
+
+class VindrDataset(Dataset):
+    """Returns (image tensor 3 x 1024 x 1024 in [0, 1], YOLO labels, DICOM path)."""
+
+    def __init__(self, records, img_size=IMG_SIZE):
+        self.records = records
+        self.img_size = img_size
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, index):
+        record = self.records[index]
+        image = preprocess_dicom(record["dicom_path"])
+        labels = boxes_to_yolo(record["boxes"], image.shape[1], image.shape[0])
+
+        image, _ = resize_keep_aspect(image, self.img_size)
+        resized_h, resized_w = image.shape
+        x1, y1, x2, y2 = detect_breast_roi(image)
+        crop = image[y1:y2, x1:x2]
+        labels = transform_boxes_to_roi(labels, resized_w, resized_h, x1, y1, x2, y2)
+
+        final_image, scale, pad_x, pad_y = resize_and_pad(cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR), self.img_size)
+        labels = transform_boxes_to_padded_image(labels, crop.shape[1], crop.shape[0], scale, pad_x, pad_y,
+                                                 self.img_size)
+        final_image = np.transpose(final_image.astype(np.float32) / 255.0, (2, 0, 1))
+        return torch.from_numpy(final_image).float(), torch.from_numpy(labels).float(), str(record["dicom_path"])
+
+
+def collate_fn(batch):
+    """Stack the images and merge the labels into the dict v8DetectionLoss expects."""
+    images, batch_idx, classes, boxes, paths = [], [], [], [], []
+    for i, (image, labels, path) in enumerate(batch):
+        images.append(image)
+        paths.append(path)
+        batch_idx.append(torch.full((labels.shape[0],), i, dtype=torch.long))
+        classes.append(labels[:, 0:1])
+        boxes.append(labels[:, 1:5])
+    targets = {"batch_idx": torch.cat(batch_idx), "cls": torch.cat(classes), "bboxes": torch.cat(boxes)}
+    return torch.stack(images, dim=0), targets, paths
+
+#### Model #####
+
+class ViTBackbone(nn.Module):
+    
