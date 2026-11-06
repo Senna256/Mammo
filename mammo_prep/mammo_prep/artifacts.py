@@ -45,6 +45,15 @@ def crop_breast(img, mask=None):
 
     return cropped, cropped_mask
 
+def background_threshold(img, margin=5, drop=0.01):
+    hist = np.bincount(img.ravel(), minlength=256)
+    peak = int(np.argmax(hist[:128])) # Look the half left of the histogram, where the background is expected to be.
+    end =  peak
+    while end < 255 and hist[end + 1] >= drop * hist[peak]:
+        end += 1
+    return end + margin # Return the threshold value, adding a margin to avoid cutting off the breast.
+
+
 
 def detect_breast_roi(img):
     """
@@ -62,7 +71,7 @@ def detect_breast_roi(img):
         raise ValueError("detect_breast_roi expects a 2D uint8 (windowed) image")
 
     h, w = img.shape
-    _, mask = cv2.threshold(img, 5, 255, cv2.THRESH_BINARY)
+    _, mask = cv2.threshold(img, background_threshold(img), 255, cv2.THRESH_BINARY) # the threshold adapts to the background level, which can be grey instead of black.
     # Closing fills the gaps in fatty tissue; opening removes labels and small markers.
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
