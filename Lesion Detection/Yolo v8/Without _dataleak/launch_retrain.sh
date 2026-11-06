@@ -8,7 +8,7 @@ launch() {  # session gpu script [session_to_wait_for]
   local dir="$ROOT/$(dirname "$script")" name=$(basename "$script" .py)
   local cmd="cd \"$dir\""
   [ -n "$wait_for" ] && cmd="$cmd; while tmux has-session -t $wait_for 2>/dev/null; do sleep 60; done"
-  cmd="$cmd; CUDA_VISIBLE_DEVICES=$gpu $PY $name.py > $name.log 2>&1"
+  cmd="$cmd; CUDA_VISIBLE_DEVICES=$gpu $PY $name.py --train > $name.log 2>&1"
   tmux new-session -d -s "$session" "$cmd"
 }
 launch vit_full_gpu0        0 "vit/Train/full_dataset/train_full_vit.py"
