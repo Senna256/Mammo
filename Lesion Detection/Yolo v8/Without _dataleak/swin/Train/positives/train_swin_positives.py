@@ -32,6 +32,7 @@ from ultralytics.nn.modules import Detect
 from ultralytics.utils.loss import v8DetectionLoss
 
 from mammo_prep.io import load_dicom
+from mammo_prep.artifacts import detect_breast_roi
 from mammo_prep.windowing import preprocess_window
 
 # ============================================================
@@ -84,28 +85,6 @@ def preprocess_dicom(dicom_path):
         image = image.max() - image
     return preprocess_window(image, dicom_dataset=ds, method="breast_tissue", voi_func="LINEAR",
                              exclude_background=True, output_dtype=np.uint8)
-
-
-def detect_breast_roi(image):
-    """Bounding box (x1, y1, x2, y2) of the breast: the largest bright region.
-
-    Falls back to the whole image when no reasonable region is found.
-    """
-    h, w = image.shape
-    _, mask = cv2.threshold(image, 5, 255, cv2.THRESH_BINARY)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return 0, 0, w, h
-    x, y, bw, bh = cv2.boundingRect(max(contours, key=cv2.contourArea))
-    if bw < 0.05 * w or bh < 0.05 * h:
-        return 0, 0, w, h
-    x1, y1, x2, y2 = max(0, x), max(0, y), min(w, x + bw), min(h, y + bh)
-    if x2 <= x1 or y2 <= y1:
-        return 0, 0, w, h
-    return x1, y1, x2, y2
 
 
 def resize_keep_aspect(image, max_size):

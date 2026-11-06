@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """How the breast crop changes with the size of the circle (structuring element).
 
-Runs detect_breast_roi() with the same steps (threshold > 5, closing, opening,
+Runs detect_breast_roi() with the same steps (threshold > background_threshold(), closing, opening,
 largest contour, 5 % minimum) but a different circle diameter, on the same
 TEST images as compare_roi.py. Size 0 = no closing/opening.
 
@@ -27,9 +27,8 @@ from matplotlib.patches import Rectangle
 
 from compare_roi import ROI_DIR, TRAIN, box_iou, fraction_inside, load_image
 from compare_all import image_key
-from mammo_prep import detect_breast_roi
+from mammo_prep import background_threshold, detect_breast_roi
 
-THRESHOLD = 5
 REFERENCE_SIZE = 31  # the size used to train the models
 SIZES = [0, 7, 15, 21, 31, 41, 51, 71, 101]
 EXAMPLE_SIZES = [0, 7, 31, 101]
@@ -38,7 +37,7 @@ EXAMPLE_SIZES = [0, 7, 31, 101]
 def breast_mask_and_box(image, size):
     """detect_breast_roi() with a circle of diameter `size`; also returns the opened mask."""
     h, w = image.shape
-    _, mask = cv2.threshold(image, THRESHOLD, 255, cv2.THRESH_BINARY)
+    _, mask = cv2.threshold(image, background_threshold(image), 255, cv2.THRESH_BINARY)
     if size > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Compare the breast crop of the training scripts with the one of mammo_prep.
 
-    training:   detect_breast_roi()  threshold > 5, closing + opening (31 px ellipse),
+    training:   detect_breast_roi()  threshold > background_threshold() (end of the
+                                     background histogram peak + 5; 5 on a black
+                                     background), closing + opening (31 px ellipse),
                 bounding box of the largest contour
     mammo_prep: crop_breast()        get_breast_mask(): Otsu + largest connected
                                      component, then bounding box of the mask
@@ -37,7 +39,7 @@ ROI_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROI_DIR.parents[2]))  # Test/, for compare_all.py
 
 from compare_all import image_key, load_training_module  # noqa: E402
-from mammo_prep import crop_breast, get_breast_mask  # noqa: E402
+from mammo_prep import background_threshold, crop_breast, get_breast_mask  # noqa: E402
 
 # Preprocessing code is identical in the six scripts, so any of them will do.
 TRAIN = load_training_module("swin_positives")
@@ -51,7 +53,7 @@ INK_SECONDARY = "#52514e"
 
 def training_mask(image):
     """The mask detect_breast_roi() builds internally (largest contour, filled)."""
-    _, mask = cv2.threshold(image, 5, 255, cv2.THRESH_BINARY)
+    _, mask = cv2.threshold(image, background_threshold(image), 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
