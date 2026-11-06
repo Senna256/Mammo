@@ -47,7 +47,7 @@ def log_status(log_path, started_after):
 
 def main():
     sessions = tmux_sessions()
-    started_after = datetime(2026, 10, 20, 11, 0)  # launch of the homogenised runs
+    started_after = datetime(2026, 11, 6)  # retraining with mammo_prep 0.4.0 (adaptive crop threshold)
     now = datetime.now()
     print(f"{now:%a %d %b %H:%M}\n")
     for gpu, queue in QUEUES.items():
