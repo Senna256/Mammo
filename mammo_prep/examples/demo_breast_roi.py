@@ -2,7 +2,7 @@
 """Shows, step by step, how detect_breast_roi() finds the breast.
 
 Top row: the structuring element (a 31 px ellipse) and each step of the mask:
-    threshold > 5  ->  closing  ->  opening  ->  largest contour and its box
+    threshold > background_threshold()  ->  closing  ->  opening  ->  largest contour and its box
 Bottom row: zoom on the area where closing adds most pixels and on the area
 where opening removes most, with the ellipse drawn to scale.
 
@@ -24,12 +24,11 @@ import numpy as np
 from matplotlib.colors import ListedColormap, to_rgb
 from matplotlib.patches import Ellipse, Rectangle
 
-from mammo_prep import detect_breast_roi, resize_keep_aspect, window_dicom
+from mammo_prep import background_threshold, detect_breast_roi, resize_keep_aspect, window_dicom
 
 DEFAULT_DICOM = "/home/enric/Datasets/Original/vindr/images/014d843f13a9d86fec945664e2541fe6/e82b6324ff951df4158627cf430996b7.dicom"
 
-# Same values as detect_breast_roi().
-THRESHOLD = 5
+# Same value as detect_breast_roi(); the threshold comes from background_threshold().
 KERNEL_SIZE = 31
 
 ADDED_COLOR, REMOVED_COLOR, BOX_COLOR, KERNEL_COLOR = "#1baf7a", "#e5484d", "#2a78d6", "#f5c518"
@@ -38,7 +37,7 @@ ZOOM = 220  # side of the zoom windows, in pixels of the 1024 image
 
 def mask_steps(image):
     """The masks that detect_breast_roi() builds, one per step."""
-    _, threshold = cv2.threshold(image, THRESHOLD, 255, cv2.THRESH_BINARY)
+    _, threshold = cv2.threshold(image, background_threshold(image), 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (KERNEL_SIZE, KERNEL_SIZE))
     closed = cv2.morphologyEx(threshold, cv2.MORPH_CLOSE, kernel)
     opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel)
@@ -103,7 +102,7 @@ def main():
                      fontsize=10, loc="left")
 
     top[1].imshow(threshold, cmap="gray")
-    top[1].set_title(f"1. Llindar: píxel > {THRESHOLD}\n"
+    top[1].set_title(f"1. Llindar: píxel > {background_threshold(image)} (fons + 5)\n"
                      f"{cv2.connectedComponents(threshold.astype(np.uint8))[0] - 1} regions separades",
                      fontsize=10, loc="left")
     top[2].imshow(paint(threshold.astype(np.uint8) * 255, [(added, ADDED_COLOR)]))

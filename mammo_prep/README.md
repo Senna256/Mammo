@@ -69,12 +69,14 @@ python examples/demo_breast_roi.py --dicom image.dicom --out roi.png
 
 `detect_breast_roi` és **l'únic** mètode de retall del preprocés:
 
-1. Aplica un llindar: els píxels > 5 es consideren mama.
+1. Aplica un llindar adaptat al fons (`background_threshold`): busca el pic del fons a la meitat fosca de l'histograma (0-127), avança fins on el pic baixa per sota de l'1 % de la seva alçada i hi suma 5. Els píxels per sobre es consideren mama. Amb fons negre el llindar és 5; amb fons gris (algunes imatges de VinDr tenen el fons a ~43) puja fins a ~48-56.
 2. Fa un tancament morfològic (el·lipse de 31 px) per omplir els buits del teixit gras.
 3. Fa una obertura (el·lipse de 31 px) per eliminar etiquetes de text i marcadors petits.
 4. Es queda amb el rectangle que envolta el contorn més gran.
 
-Si no troba cap regió raonable, conserva tota la imatge. Una regió no és raonable si fa menys del 5 % de l'amplada o de l'alçada. Això passa sobretot quan el fons de la imatge és gris en lloc de negre: no es perd cap lesió, però la mama queda més petita dins la imatge final.
+Si no troba cap regió raonable, conserva tota la imatge. Una regió no és raonable si fa menys del 5 % de l'amplada o de l'alçada.
+
+Fins a la versió 0.3.0 el llindar era fix (> 5). En les imatges amb fons gris tota la imatge superava el llindar i el retall era la imatge sencera (59 de 557 imatges de TEST analitzades). Des de la 0.4.0 el llindar s'adapta al fons i aquestes imatges també es retallen; en les de fons negre el retall és el mateix.
 
 ### Caixes de lesions
 
@@ -97,11 +99,11 @@ L'únic paràmetre configurable és `img_size`, la mida del quadrat final (per d
 
 La resta de valors són fixos:
 - mètode de windowing;
-- llindar de 5;
+- llindar: fons + 5 (`background_threshold`);
 - nucli de 31 px;
 - interpolació lineal.
 
-El llindar i el nucli estan ajustats per a imatges de 1024 px. Amb un altre `img_size` el retall funciona, però pot ser menys precís.
+El nucli està ajustat per a imatges de 1024 px. Amb un altre `img_size` el retall funciona, però pot ser menys precís.
 
 ## Referència de funcions
 
@@ -193,6 +195,9 @@ Retorna `True` si el DICOM és MONOCHROME1.
 Inverteix les imatges MONOCHROME1 com a `max + min − imatge`.
 
 ### `artifacts.py`: retall, mida i orientació
+
+#### `background_threshold(img, margin=5, drop=0.01)`
+Llindar que separa el fons de la mama en una imatge uint8: final del pic del fons de l'histograma (on el recompte baixa per sota de `drop` × l'alçada del pic) + `margin`. Amb fons negre retorna 5.
 
 #### `detect_breast_roi(img)`
 Retorna el rectangle `(x1, y1, x2, y2)` de la mama; el mètode s'explica a [Com es troba la mama](#com-es-troba-la-mama-pas-5).

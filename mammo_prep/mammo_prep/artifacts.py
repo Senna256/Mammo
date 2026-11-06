@@ -45,26 +45,36 @@ def crop_breast(img, mask=None):
 
     return cropped, cropped_mask
 
+
 def background_threshold(img, margin=5, drop=0.01):
+    """
+    Grey level that separates the background from the breast in a uint8 image.
+
+    The background is the highest histogram peak in the dark half (0-127).
+    Walk right from that peak until the count falls below `drop` x the peak
+    height (end of the peak) and add `margin` grey levels.
+
+    Black background (peak at 0) gives 5, the old fixed threshold; a grey
+    background (e.g. peak at 43 in some VinDr images) gives ~48-56.
+    """
     hist = np.bincount(img.ravel(), minlength=256)
-    peak = int(np.argmax(hist[:128])) # Look the half left of the histogram, where the background is expected to be.
-    end =  peak
+    peak = int(np.argmax(hist[:128]))  # Left half of the histogram, where the background is expected.
+    end = peak
     while end < 255 and hist[end + 1] >= drop * hist[peak]:
         end += 1
-    return end + margin # Return the threshold value, adding a margin to avoid cutting off the breast.
-
+    return end + margin  # The margin keeps the background noise out of the mask.
 
 
 def detect_breast_roi(img):
     """
-    Bounding box (x1, y1, x2, y2) of the breast: the largest region above a fixed threshold.
+    Bounding box (x1, y1, x2, y2) of the breast: the largest region above the background.
 
     Crop used by preprocess_mammogram(). Expects the windowed uint8 image
-    resized to 1024 px on its long side: the threshold (5) and the 31 px
-    kernel are tuned for that input.
+    resized to 1024 px on its long side: the 31 px kernel is tuned for that input.
 
-    Falls back to the whole image when no reasonable region is found, mainly
-    when the background is grey instead of black.
+    The threshold adapts to the background (background_threshold()), so images
+    with a grey background are cropped too; on a black background it is 5.
+    Falls back to the whole image when no reasonable region is found.
     x2 / y2 are exclusive: crop with img[y1:y2, x1:x2].
     """
     if img.dtype != np.uint8 or img.ndim != 2:
