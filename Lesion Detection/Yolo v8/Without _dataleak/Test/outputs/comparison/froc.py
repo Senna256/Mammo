@@ -57,8 +57,8 @@ FROC_DIR = COMPARISON_DIR / "froc"
 IOUS = [0.30, 0.50]
 # Usual FROC operating points; their mean TPR is the "mean sensitivity" score.
 FPPI_POINTS = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
-X_LIMITS = (0.01, 10.0)
-X_TICKS = [0.01, 0.03, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+X_LIMITS = (0.0, 6.0)  # linear axis; Swin · positives, the model that predicts most, ends at ~5.3 FPPI
+X_TICKS = np.arange(0.0, 6.01, 0.5)
 
 # ============================================================
 # DATA
@@ -114,13 +114,11 @@ def load_curves():
 def style_axis(ax, title):
     ax.set_facecolor(SURFACE)
     ax.set_title(title, color=INK_PRIMARY, fontsize=11, loc="left")
-    ax.set_xscale("log")
     ax.set_xlim(*X_LIMITS)
     ax.set_ylim(0, 1.0)
     ax.set_xticks(X_TICKS)
     ax.set_xticklabels([f"{f:g}" for f in X_TICKS])
-    ax.minorticks_off()
-    ax.set_xlabel("False positives per image (log scale)", color=INK_SECONDARY, fontsize=9)
+    ax.set_xlabel("Mean number of false positives per image", color=INK_SECONDARY, fontsize=9)
     ax.set_ylabel("Sensitivity (TPR)", color=INK_SECONDARY, fontsize=9)
     ax.grid(True, color=GRID_COLOR, linewidth=0.6)
     ax.set_axisbelow(True)
@@ -137,7 +135,6 @@ def draw_curve(ax, curve, color, linestyle, label):
         return
     x = np.concatenate([[X_LIMITS[0]], curve["fppi"].to_numpy()])
     y = np.concatenate([[0.0], curve["tpr"].to_numpy()])
-    x = np.maximum(x, X_LIMITS[0])
     ax.step(x, y, where="post", color=color, linestyle=linestyle, linewidth=2, label=label)
     ax.plot(x[-1], y[-1], "o", color=color, markersize=5, markeredgecolor=SURFACE)
 
