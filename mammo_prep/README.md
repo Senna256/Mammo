@@ -240,6 +240,16 @@ Calcula una màscara de la mama (0/255) amb el llindar d'Otsu i es queda amb el 
 - Accepta intensitats DICOM crues.
 - No forma part del preprocessament.
 
+### `augment.py`: data augmentation per a l'entrenament
+
+#### `augment_detection(image, labels, rng=None, p_flip=0.5, p_intensity=0.5, contrast=(0.9, 1.1), brightness=(-10.0, 10.0))`
+Transformacions aleatòries d'una imatge preprocessada i les seves caixes YOLO. Només s'ha d'aplicar a TRAIN; validació i test han de ser deterministes.
+- **Flip horitzontal** amb probabilitat `p_flip`: el centre de cada caixa passa de `cx` a `1 − cx`.
+- **Brillantor i contrast** amb probabilitat `p_intensity`: `imatge·α + β`, amb `α` dins de `contrast` i `β` dins de `brightness` (nivells de gris). Els píxels que valen exactament 0 (el padding negre de `resize_and_pad`) es queden a 0. Les caixes no canvien.
+- `image`: uint8, H × W o H × W × C. `labels`: matriu (N, 5) amb files `[cls, cx, cy, w, h]` normalitzades a [0, 1]; N pot ser 0.
+- `rng`: qualsevol generador amb `.random()` i `.uniform(a, b)` (`random.Random`, `numpy.random.Generator`). Per defecte, el mòdul `random`, que PyTorch inicialitza diferent a cada worker del `DataLoader`.
+- **Retorna** `(imatge, labels)` noves; les entrades no es modifiquen.
+
 ### `viz.py`: visualització
 
 #### `show(img, title="")`
