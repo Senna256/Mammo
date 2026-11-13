@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""ViT-Base + YOLOv8 lesion detection on VinDr-Mammo. TRAIN regime: full.
+"""ViT-Small + YOLOv8 lesion detection on VinDr-Mammo. TRAIN regime: full.
 
 Trains on all 14,400 TRAIN images (1,270 with lesions, 13,130 without).
 
 Pipeline: DICOM -> breast_tissue windowing -> breast crop -> 1024x1024
--> ViT-Base (P3/P4/P5) -> YOLOv8 Detect -> v8DetectionLoss.
+-> ViT-Small (P3/P4/P5) -> YOLOv8 Detect -> v8DetectionLoss.
 
 The six experiments ({Swin, ViT} x {full, 4k, positives}) are identical except
 for the model and select_train_records(). Keep the rest of the code in sync.
@@ -34,6 +34,7 @@ from ultralytics.utils.loss import v8DetectionLoss
 
 from mammo_prep.io import load_dicom
 from mammo_prep.artifacts import detect_breast_roi
+from mammo_prep.augment import augment_detection
 from mammo_prep.windowing import preprocess_window
 
 # ============================================================
@@ -51,17 +52,18 @@ ACCUMULATION_STEPS = 4  # effective batch = 32
 EPOCHS = 100
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
+DROP_PATH_RATE = 0.1  # stochastic depth in the backbone; set explicitly so Swin and ViT match
 NUM_WORKERS = 16
 SEED = 42
 VAL_FRACTION = 0.1  # of the CSV training studies
 REGIME = "full"
 DETECT_STRIDES = (8.0, 16.0, 32.0)  # P3, P4, P5
 
-MODEL_DESCRIPTION = "ViT-Base"
-MODEL_NAME = "vit_base_patch16_224"
-VIT_EMBED_DIM = 768
+MODEL_DESCRIPTION = "ViT-Small"
+MODEL_NAME = "vit_small_patch16_224.augreg_in21k_ft_in1k"  # ImageNet-21k pretraining + 1k fine-tune, as Swin; 22 M params vs 28 M Swin-Tiny
+VIT_EMBED_DIM = 384
 VIT_BLOCKS = (3, 7, 11)  # transformer blocks whose tokens become P3 / P4 / P5
-VIT_FEATURE_CHANNELS = (256, 512, 768)  # channels of P3 / P4 / P5 after the 1x1 adapters
+VIT_FEATURE_CHANNELS = (192, 384, 768)  # channels of P3 / P4 / P5 after the 1x1 adapters (= Swin-Tiny, same Detect head)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -233,11 +235,16 @@ def select_train_records(train_records):
 # ============================================================
 
 class VindrDataset(Dataset):
-    """Returns (image tensor 3 x 1024 x 1024 in [0, 1], YOLO labels, DICOM path)."""
+    """Returns (image tensor 3 x 1024 x 1024 in [0, 1], YOLO labels, DICOM path).
 
-    def __init__(self, records, img_size=IMG_SIZE):
+    augment=True applies mammo_prep.augment_detection (random horizontal flip and
+    brightness / contrast). Only the TRAIN loader uses it; VAL stays deterministic.
+    """
+
+    def __init__(self, records, img_size=IMG_SIZE, augment=False):
         self.records = records
         self.img_size = img_size
+        self.augment = augment
 
     def __len__(self):
         return len(self.records)
@@ -256,6 +263,8 @@ class VindrDataset(Dataset):
         final_image, scale, pad_x, pad_y = resize_and_pad(cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR), self.img_size)
         labels = transform_boxes_to_padded_image(labels, crop.shape[1], crop.shape[0], scale, pad_x, pad_y,
                                                  self.img_size)
+        if self.augment:
+            final_image, labels = augment_detection(final_image, labels)
         final_image = np.transpose(final_image.astype(np.float32) / 255.0, (2, 0, 1))
         return torch.from_numpy(final_image).float(), torch.from_numpy(labels).float(), str(record["dicom_path"])
 
@@ -277,14 +286,15 @@ def collate_fn(batch):
 # ============================================================
 
 class ViTBackbone(nn.Module):
-    """ViT-Base run at 1024 px: a single 64 x 64 grid of 16 px patches.
+    """ViT-Small run at 1024 px: a single 64 x 64 grid of 16 px patches.
 
-    Returns the patch tokens of VIT_BLOCKS as three (B, 768, 64, 64) maps.
+    Returns the patch tokens of VIT_BLOCKS as three (B, 384, 64, 64) maps.
     """
 
     def __init__(self, pretrained=True, img_size=IMG_SIZE):
         super().__init__()
-        self.vit = timm.create_model(MODEL_NAME, pretrained=pretrained, num_classes=0, img_size=img_size)
+        self.vit = timm.create_model(MODEL_NAME, pretrained=pretrained, num_classes=0, img_size=img_size,
+                                     drop_path_rate=DROP_PATH_RATE)
         self.embed_dim = self.vit.embed_dim
         self.feature_adapters = nn.ModuleList([nn.Conv2d(VIT_EMBED_DIM, channels, kernel_size=1)
                                                for channels in VIT_FEATURE_CHANNELS])
@@ -321,7 +331,7 @@ class ViTBackbone(nn.Module):
 
 
 class ViTYOLO(nn.Module):
-    """ViT-Base blocks 3 / 7 / 11, resized to strides 8 / 16 / 32, feed the YOLOv8 Detect head."""
+    """ViT-Small blocks 3 / 7 / 11, resized to strides 8 / 16 / 32, feed the YOLOv8 Detect head."""
 
     def __init__(self, img_size=IMG_SIZE, num_classes=NUM_CLASSES, pretrained=True):
         super().__init__()
@@ -329,8 +339,14 @@ class ViTYOLO(nn.Module):
         self.detect = Detect(nc=num_classes, ch=VIT_FEATURE_CHANNELS)
         self.detect.stride = torch.tensor(DETECT_STRIDES, dtype=torch.float32)
         self.detect.bias_init()
+        # Input normalisation of the backbone's pretraining (timm pretrained_cfg). Not persistent:
+        # derived from MODEL_NAME, so it is not stored in the checkpoints.
+        cfg = timm.get_pretrained_cfg(MODEL_NAME)
+        self.register_buffer("pixel_mean", torch.tensor(cfg.mean).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("pixel_std", torch.tensor(cfg.std).view(1, 3, 1, 1), persistent=False)
 
     def forward(self, x):
+        x = (x - self.pixel_mean) / self.pixel_std  # [0, 1] image -> backbone input distribution
         # All three ViT maps are at stride 16; build the stride 8 / 16 / 32 pyramid YOLO expects.
         p3, p4, p5 = (adapter(feature) for adapter, feature in zip(self.backbone.feature_adapters, self.backbone(x)))
         height, width = x.shape[-2:]
@@ -463,7 +479,7 @@ def make_loaders(batch_size, workers, img_size):
           f"{len(val_records):,} | Test images (not used here): {len(test_records):,}", flush=True)
     loader_kwargs = dict(batch_size=batch_size, num_workers=workers, pin_memory=torch.cuda.is_available(),
                          persistent_workers=workers > 0, collate_fn=collate_fn)
-    train_loader = DataLoader(VindrDataset(train_records, img_size), shuffle=True, **loader_kwargs)
+    train_loader = DataLoader(VindrDataset(train_records, img_size, augment=True), shuffle=True, **loader_kwargs)
     val_loader = DataLoader(VindrDataset(val_records, img_size), shuffle=False, **loader_kwargs)
     return train_loader, val_loader
 
@@ -481,6 +497,8 @@ def run_training(resume=None, epochs=EPOCHS, batch_size=BATCH_SIZE, workers=NUM_
     print(f"  Epochs: {epochs}")
     print(f"  Learning rate: {LEARNING_RATE}")
     print(f"  Weight decay: {WEIGHT_DECAY}")
+    print(f"  Drop path rate: {DROP_PATH_RATE}")
+    print("  Augmentation (TRAIN only): horizontal flip p=0.5, brightness/contrast p=0.5")
     if torch.cuda.is_available():
         print(f"  GPU: {torch.cuda.get_device_name(0)}", flush=True)
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""ViT-Base + YOLOv8 lesion detection on VinDr-Mammo, TRAIN regime positives: TEST evaluation.
+"""ViT-Small + YOLOv8 lesion detection on VinDr-Mammo, TRAIN regime positives: TEST evaluation.
 
 Evaluates the checkpoint of vit/Train/positives/train_vit_positives.py on the official CSV TEST
 split (4,000 images, 452 lesion boxes).
 
 Pipeline: TEST DICOM -> breast_tissue windowing -> breast crop -> 1024x1024
--> ViT-Base (P3/P4/P5) -> YOLOv8 Detect -> NMS -> predictions.csv -> metrics.
+-> ViT-Small (P3/P4/P5) -> YOLOv8 Detect -> NMS -> predictions.csv -> metrics.
 
 The six evaluation scripts ({Swin, ViT} x {full, 4k, positives}) are identical
 except for the model and the experiment paths. Preprocessing, splits, dataset
@@ -79,6 +79,7 @@ EXPERIMENT_LABEL = "ViT · positives"
 
 NUM_CLASSES = 1
 IMG_SIZE = 1024
+DROP_PATH_RATE = 0.1  # as in training; inactive in eval mode
 BATCH_SIZE = 8
 NUM_WORKERS = 16
 SEED = 42
@@ -86,11 +87,11 @@ VAL_FRACTION = 0.1  # of the CSV training studies (only to rebuild the same spli
 REGIME = "positives"
 DETECT_STRIDES = (8.0, 16.0, 32.0)  # P3, P4, P5
 
-MODEL_DESCRIPTION = "ViT-Base"
-MODEL_NAME = "vit_base_patch16_224"
-VIT_EMBED_DIM = 768
+MODEL_DESCRIPTION = "ViT-Small"
+MODEL_NAME = "vit_small_patch16_224.augreg_in21k_ft_in1k"  # ImageNet-21k pretraining + 1k fine-tune, as Swin; 22 M params vs 28 M Swin-Tiny
+VIT_EMBED_DIM = 384
 VIT_BLOCKS = (3, 7, 11)  # transformer blocks whose tokens become P3 / P4 / P5
-VIT_FEATURE_CHANNELS = (256, 512, 768)  # channels of P3 / P4 / P5 after the 1x1 adapters
+VIT_FEATURE_CHANNELS = (192, 384, 768)  # channels of P3 / P4 / P5 after the 1x1 adapters (= Swin-Tiny, same Detect head)
 
 # Detections: Ultralytics validation defaults.
 CONF_THRESHOLD = 0.001
@@ -301,14 +302,15 @@ def collate_fn(batch):
 # ============================================================
 
 class ViTBackbone(nn.Module):
-    """ViT-Base run at 1024 px: a single 64 x 64 grid of 16 px patches.
+    """ViT-Small run at 1024 px: a single 64 x 64 grid of 16 px patches.
 
-    Returns the patch tokens of VIT_BLOCKS as three (B, 768, 64, 64) maps.
+    Returns the patch tokens of VIT_BLOCKS as three (B, 384, 64, 64) maps.
     """
 
     def __init__(self, pretrained=True, img_size=IMG_SIZE):
         super().__init__()
-        self.vit = timm.create_model(MODEL_NAME, pretrained=pretrained, num_classes=0, img_size=img_size)
+        self.vit = timm.create_model(MODEL_NAME, pretrained=pretrained, num_classes=0, img_size=img_size,
+                                     drop_path_rate=DROP_PATH_RATE)
         self.embed_dim = self.vit.embed_dim
         self.feature_adapters = nn.ModuleList([nn.Conv2d(VIT_EMBED_DIM, channels, kernel_size=1)
                                                for channels in VIT_FEATURE_CHANNELS])
@@ -345,7 +347,7 @@ class ViTBackbone(nn.Module):
 
 
 class ViTYOLO(nn.Module):
-    """ViT-Base blocks 3 / 7 / 11, resized to strides 8 / 16 / 32, feed the YOLOv8 Detect head."""
+    """ViT-Small blocks 3 / 7 / 11, resized to strides 8 / 16 / 32, feed the YOLOv8 Detect head."""
 
     def __init__(self, img_size=IMG_SIZE, num_classes=NUM_CLASSES, pretrained=True):
         super().__init__()
@@ -353,8 +355,14 @@ class ViTYOLO(nn.Module):
         self.detect = Detect(nc=num_classes, ch=VIT_FEATURE_CHANNELS)
         self.detect.stride = torch.tensor(DETECT_STRIDES, dtype=torch.float32)
         self.detect.bias_init()
+        # Input normalisation of the backbone's pretraining (timm pretrained_cfg). Not persistent:
+        # derived from MODEL_NAME, so it is not stored in the checkpoints.
+        cfg = timm.get_pretrained_cfg(MODEL_NAME)
+        self.register_buffer("pixel_mean", torch.tensor(cfg.mean).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("pixel_std", torch.tensor(cfg.std).view(1, 3, 1, 1), persistent=False)
 
     def forward(self, x):
+        x = (x - self.pixel_mean) / self.pixel_std  # [0, 1] image -> backbone input distribution
         # All three ViT maps are at stride 16; build the stride 8 / 16 / 32 pyramid YOLO expects.
         p3, p4, p5 = (adapter(feature) for adapter, feature in zip(self.backbone.feature_adapters, self.backbone(x)))
         height, width = x.shape[-2:]

@@ -78,6 +78,7 @@ EXPERIMENT_LABEL = "Swin · positives"
 
 NUM_CLASSES = 1
 IMG_SIZE = 1024
+DROP_PATH_RATE = 0.1  # as in training; inactive in eval mode
 BATCH_SIZE = 8
 NUM_WORKERS = 16
 SEED = 42
@@ -86,7 +87,7 @@ REGIME = "positives"
 DETECT_STRIDES = (8.0, 16.0, 32.0)  # P3, P4, P5
 
 MODEL_DESCRIPTION = "Swin-Tiny"
-MODEL_NAME = "swin_tiny_patch4_window7_224"
+MODEL_NAME = "swin_tiny_patch4_window7_224.ms_in22k_ft_in1k"  # ImageNet-21k pretraining + 1k fine-tune, as ViT
 SWIN_CHANNELS = (192, 384, 768)  # channels of Swin stages 1-3 (strides 8 / 16 / 32)
 
 # Detections: Ultralytics validation defaults.
@@ -303,12 +304,19 @@ class SwinYOLO(nn.Module):
     def __init__(self, img_size=IMG_SIZE, num_classes=NUM_CLASSES, pretrained=True):
         super().__init__()
         self.backbone = timm.create_model(MODEL_NAME, pretrained=pretrained, features_only=True,
-                                          out_indices=(1, 2, 3), img_size=img_size)
+                                          out_indices=(1, 2, 3), img_size=img_size,
+                                          drop_path_rate=DROP_PATH_RATE)
         self.detect = Detect(nc=num_classes, ch=SWIN_CHANNELS)
         self.detect.stride = torch.tensor(DETECT_STRIDES, dtype=torch.float32)
         self.detect.bias_init()
+        # Input normalisation of the backbone's pretraining (timm pretrained_cfg). Not persistent:
+        # derived from MODEL_NAME, so it is not stored in the checkpoints.
+        cfg = timm.get_pretrained_cfg(MODEL_NAME)
+        self.register_buffer("pixel_mean", torch.tensor(cfg.mean).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("pixel_std", torch.tensor(cfg.std).view(1, 3, 1, 1), persistent=False)
 
     def forward(self, x):
+        x = (x - self.pixel_mean) / self.pixel_std  # [0, 1] image -> backbone input distribution
         # timm returns Swin features channels-last (B, H, W, C); Detect wants (B, C, H, W).
         features = [feature.permute(0, 3, 1, 2).contiguous() for feature in self.backbone(x)]
         return self.detect(features)
