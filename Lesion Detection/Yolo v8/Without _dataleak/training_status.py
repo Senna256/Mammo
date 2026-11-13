@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Status of the six Without _dataleak trainings: state, epoch, time per epoch and ETA.
+"""Status of the Without _dataleak trainings (6 models + ViT-Base ablation): state, epoch, time per epoch and ETA.
 
 Usage: python training_status.py
 States: queued (tmux session waiting, no log yet), running, finished, stopped
@@ -19,14 +19,15 @@ EPOCHS = 100
 # (tmux session, script, estimated min/epoch before the run has finished an epoch) in GPU queue order.
 QUEUES = {
     "GPU 0 (A40)": [
-        ("vit_full_gpu0", "vit/Train/full_dataset/train_full_vit.py", 18.0),
         ("swin_full_gpu0", "swin/Train/full_dataset/train_full_swin.py", 12.0),
+        ("swin_4k_gpu0", "swin/Train/4k images/train_4k_swin.py", 3.5),
+        ("vit_4k_gpu0", "vit/Train/4k images/train_4k_vit.py", 3.5),
+        ("vit_base_positives_gpu0", "vit_base_ablation/Train/positives/train_vit_base_positives.py", 2.3),
     ],
     "GPU 1 (A30)": [
-        ("vit_4k_gpu1", "vit/Train/4k images/train_4k_vit.py", 6.5),
-        ("swin_4k_gpu1", "swin/Train/4k images/train_4k_swin.py", 4.0),
-        ("swin_positives_gpu1", "swin/Train/positives/train_swin_positives.py", 2.5),
-        ("vit_positives_gpu1", "vit/Train/positives/train_vit_positives.py", 4.5),
+        ("vit_full_gpu1", "vit/Train/full_dataset/train_full_vit.py", 15.0),
+        ("swin_positives_gpu1", "swin/Train/positives/train_swin_positives.py", 1.6),
+        ("vit_positives_gpu1", "vit/Train/positives/train_vit_positives.py", 1.6),
     ],
 }
 
@@ -47,7 +48,7 @@ def log_status(log_path, started_after):
 
 def main():
     sessions = tmux_sessions()
-    started_after = datetime(2026, 11, 6)  # retraining with mammo_prep 0.4.0 (adaptive crop threshold)
+    started_after = datetime(2026, 11, 13)  # retraining with equalised Swin / ViT settings (ViT-Small)
     now = datetime.now()
     print(f"{now:%a %d %b %H:%M}\n")
     for gpu, queue in QUEUES.items():
@@ -71,7 +72,7 @@ def main():
             else:
                 state, eta = ("stopped (check log!)" if status else "not launched"), None
             eta_text = f"ETA {eta:%a %d %b %H:%M}" if eta else ""
-            print(f"  {script_path.parent.parent.parent.name:4s} {script_path.parent.name:13s} {state:20s} "
+            print(f"  {script_path.parent.parent.parent.name:17s} {script_path.parent.name:13s} {state:20s} "
                   f"epoch {epochs_done:3d}/{EPOCHS}  {minutes:5.1f} min/epoch  {eta_text}")
         print()
 
