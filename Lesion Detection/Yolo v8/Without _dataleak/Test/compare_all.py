@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare the six Without _dataleak experiments on the official CSV TEST split.
 
-Experiments: {Swin, ViT} x {full dataset, 4k images, positives}.
+Experiments: {Swin-Tiny, ViT-Small} x {full dataset, 4k images, positives}.
 
 Each experiment is evaluated by its own script (e.g. vit/Test/full_dataset/
 eval_full_vit.py), which writes Test/outputs/<experiment>/. This script only
@@ -39,28 +39,28 @@ EXPERIMENTS_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 
 EXPERIMENTS = {
-    "swin_full": {"label": "Swin · full", "backbone": "Swin", "regime": "full",
+    "swin_full": {"label": "Swin-T · full", "backbone": "Swin", "regime": "full",
                   "script": "swin/Train/full_dataset/train_full_swin.py",
                   "eval_script": "swin/Test/full_dataset/eval_full_swin.py"},
-    "swin_4k": {"label": "Swin · 4k", "backbone": "Swin", "regime": "4k",
+    "swin_4k": {"label": "Swin-T · 4k", "backbone": "Swin", "regime": "4k",
                 "script": "swin/Train/4k images/train_4k_swin.py",
                 "eval_script": "swin/Test/4k images/eval_4k_swin.py"},
-    "swin_positives": {"label": "Swin · positives", "backbone": "Swin", "regime": "positives",
+    "swin_positives": {"label": "Swin-T · positives", "backbone": "Swin", "regime": "positives",
                        "script": "swin/Train/positives/train_swin_positives.py",
                        "eval_script": "swin/Test/positives/eval_swin_positives.py"},
-    "vit_full": {"label": "ViT · full", "backbone": "ViT", "regime": "full",
+    "vit_full": {"label": "ViT-S · full", "backbone": "ViT", "regime": "full",
                  "script": "vit/Train/full_dataset/train_full_vit.py",
                  "eval_script": "vit/Test/full_dataset/eval_full_vit.py"},
-    "vit_4k": {"label": "ViT · 4k", "backbone": "ViT", "regime": "4k",
+    "vit_4k": {"label": "ViT-S · 4k", "backbone": "ViT", "regime": "4k",
                "script": "vit/Train/4k images/train_4k_vit.py",
                "eval_script": "vit/Test/4k images/eval_4k_vit.py"},
-    "vit_positives": {"label": "ViT · positives", "backbone": "ViT", "regime": "positives",
+    "vit_positives": {"label": "ViT-S · positives", "backbone": "ViT", "regime": "positives",
                       "script": "vit/Train/positives/train_vit_positives.py",
                       "eval_script": "vit/Test/positives/eval_vit_positives.py"},
 }
 
 # Same values as the evaluation scripts (used for the plots and the report).
-CONF_THRESHOLD = 0.001
+CONF_THRESHOLD = 0.0
 NMS_IOU_THRESHOLD = 0.70   
 MAX_DETECTIONS = 10
 IOU_THRESHOLDS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55,

@@ -20,8 +20,10 @@ Why NMS is applied
 The YOLOv8 Detect head scores every position of its three grids (21,504 per
 1024x1024 image), so a single lesion produces many overlapping boxes. Without
 NMS every duplicate of a correct box counts as a false positive, which makes
-FPPI, precision and AP meaningless. Settings follow the Ultralytics validation
-defaults: conf 0.001, NMS IoU 0.70, max 300 detections per image.
+FPPI, precision and AP meaningless. NMS IoU 0.70 (Ultralytics default) and at most
+MAX_DETECTIONS boxes per image. No confidence floor (CONF_THRESHOLD = 0): every image
+keeps its MAX_DETECTIONS highest-scoring boxes, so every FROC curve covers the same
+FPPI range. A floor only cuts the end of the ranking; the points it keeps are unchanged.
 
 Ground-truth denominator
 ------------------------
@@ -96,8 +98,8 @@ VIT_EMBED_DIM = 768
 VIT_BLOCKS = (3, 7, 11)  # transformer blocks whose tokens become P3 / P4 / P5
 VIT_FEATURE_CHANNELS = (192, 384, 768)  # channels of P3 / P4 / P5 after the 1x1 adapters (= Swin-Tiny, same Detect head)
 
-# Detections: Ultralytics validation defaults.
-CONF_THRESHOLD = 0.001
+# Detections. CONF_THRESHOLD = 0: no confidence floor, the ranking alone decides (see docstring).
+CONF_THRESHOLD = 0.0
 NMS_IOU_THRESHOLD = 0.70
 MAX_DETECTIONS = 10
 
